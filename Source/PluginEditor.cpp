@@ -27,7 +27,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("Generative Slicer — step 1: load + play whole sample",
+    g.drawFittedText ("NeditVST — step 2: load + detect transients (playback still whole-sample)",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -64,7 +64,12 @@ void SlicerAudioProcessorEditor::chooseAndLoadFile()
         if (file.existsAsFile())
         {
             processor.loadSample (file);
-            statusLabel.setText (processor.getLoadedFileName(), juce::dontSendNotification);
+
+            const juce::String text = processor.getLoadedFileName()
+                                     + "  —  " + juce::String (processor.getNumSlices())
+                                     + " slice" + (processor.getNumSlices() == 1 ? "" : "s")
+                                     + " detected";
+            statusLabel.setText (text, juce::dontSendNotification);
         }
     });
 }

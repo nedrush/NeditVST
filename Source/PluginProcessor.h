@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "TransientDetector.h"
 
 //==============================================================================
 // STEP 1 of the build: plugin shell + sample loading + whole-sample playback.
@@ -89,6 +90,16 @@ public:
     bool hasSample() const { return sampleLoaded; }
     juce::String getLoadedFileName() const { return loadedFileName; }
 
+    //=== Slicing (Step 2) ===
+    // Re-runs peak-picking (cheap — analysis is already cached) with new
+    // sensitivity/holdoff and stores the result. Called once automatically
+    // after loadSample() with default settings; the editor can call this
+    // again later to let the user adjust sensitivity interactively.
+    void redetectSlices (float sensitivity, float holdoffMs);
+    int getNumSlices() const { return (int) slices.size(); }
+    Slice getSlice (int index) const { return slices[(size_t) index]; }
+    const std::vector<Slice>& getSlices() const { return slices; }
+
     //=== Shared read access for voices ===
     const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
     double getSampleSampleRate() const { return sampleSampleRate; }
@@ -108,6 +119,16 @@ private:
     bool sampleLoaded = false;
     juce::String loadedFileName;
     juce::CriticalSection sampleLock; // guards sampleBuffer during loadSample()
+
+    TransientDetector transientDetector;
+    std::vector<Slice> slices;
+
+    // Sensible starting defaults — moderate sensitivity, 30ms holdoff to
+    // avoid double-triggering on a single drum hit's ringing tail. These'll
+    // want to be user-facing parameters once the editor grows a sensitivity
+    // slider (part of the playback/UI step, not this one).
+    static constexpr float defaultSensitivity = 0.5f;
+    static constexpr float defaultHoldoffMs = 30.0f;
 
     static constexpr int numVoices = 8;
 

@@ -162,11 +162,28 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
     juce::AudioBuffer<float> newBuffer ((int) reader->numChannels, (int) reader->lengthInSamples);
     reader->read (&newBuffer, 0, (int) reader->lengthInSamples, 0, true, true);
 
+    {
+        const juce::ScopedLock sl (sampleLock);
+        sampleBuffer = std::move (newBuffer);
+        sampleSampleRate = reader->sampleRate;
+        sampleLoaded = true;
+        loadedFileName = file.getFileName();
+
+        // Analysis is a one-off pass over the whole file — do it while we
+        // still hold the lock so a voice can't start reading sampleBuffer
+        // mid-swap on the audio thread.
+        transientDetector.analyze (sampleBuffer, sampleSampleRate);
+    }
+
+    redetectSlices (defaultSensitivity, defaultHoldoffMs);
+}
+
+void SlicerAudioProcessor::redetectSlices (float sensitivity, float holdoffMs)
+{
+    auto newSlices = transientDetector.detectSlices (sensitivity, holdoffMs);
+
     const juce::ScopedLock sl (sampleLock);
-    sampleBuffer = std::move (newBuffer);
-    sampleSampleRate = reader->sampleRate;
-    sampleLoaded = true;
-    loadedFileName = file.getFileName();
+    slices = std::move (newSlices);
 }
 
 //==============================================================================
