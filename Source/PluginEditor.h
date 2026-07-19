@@ -4,9 +4,10 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-/** Minimal step-1 editor: a button to load a sample and a label showing
-    what's loaded. Waveform display and slice markers come in step 2, once
-    we've ported the transient detector and actually have slices to draw. */
+/** Step-4 editor: load button, status label, and the generative-mode
+    controls — a toggle plus a probability slider for how often a random
+    slice gets substituted for the mapped one. Waveform display and slice
+    markers are still a later step. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener
 {
@@ -25,6 +26,10 @@ private:
 
     juce::TextButton loadButton { "Load Sample..." };
     juce::Label statusLabel;
+
+    juce::ToggleButton generativeToggle { "Generative Mode" };
+    juce::Slider probabilitySlider;
+    juce::Label probabilitySliderLabel;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 

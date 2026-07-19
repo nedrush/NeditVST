@@ -125,10 +125,35 @@ public:
     double getSampleSampleRate() const { return sampleSampleRate; }
     juce::CriticalSection& getSampleLock() { return sampleLock; }
 
-    //=== Generative hook (placeholder for the probability layer) ===
-    // 0.0 = never trigger, 1.0 = always trigger. Used later once we have
-    // multiple slices to choose between; for now it's unused by voices.
-    std::atomic<float> triggerProbability { 1.0f };
+    //=== Generative layer (Step 4) ===
+    // When generativeModeEnabled is on, each note-on has randomSliceProbability
+    // chance of playing a random slice instead of the one strictly mapped to
+    // that key. At 0.0 it behaves identically to Step 3 (always the mapped
+    // slice); at 1.0 every hit is a random slice regardless of which key was
+    // played. Deliberately simple for a first pass — no per-slice weighting
+    // or note-range restrictions yet, just a global chance.
+    std::atomic<bool> generativeModeEnabled { false };
+    std::atomic<float> randomSliceProbability { 0.3f };
+
+    // Voices call this instead of getSliceIndexForNote() directly — it
+    // applies the generative-mode coin-flip on top of the note mapping.
+    // Not thread-locked itself: callers (SliceVoice::startNote) already
+    // hold sampleLock while reading slices, so this rides along with that.
+    int resolveSliceIndexForNote (int midiNoteNumber)
+    {
+        const int mappedIndex = getSliceIndexForNote (midiNoteNumber);
+
+        if (mappedIndex < 0)
+            return -1;
+
+        if (generativeModeEnabled.load() && slices.size() > 1
+            && random.nextFloat() < randomSliceProbability.load())
+        {
+            return random.nextInt ((int) slices.size());
+        }
+
+        return mappedIndex;
+    }
 
 private:
     juce::AudioFormatManager formatManager;
@@ -142,6 +167,7 @@ private:
 
     TransientDetector transientDetector;
     std::vector<Slice> slices;
+    juce::Random random; // only touched from the audio thread (in resolveSliceIndexForNote)
 
     // Middle C by default — first slice sits under the note most people
     // reach for first. Change via setRootNote() once the editor grows a

@@ -13,7 +13,29 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
                                                 : "No sample loaded",
                           juce::dontSendNotification);
 
-    setSize (420, 220);
+    addAndMakeVisible (generativeToggle);
+    generativeToggle.setToggleState (processor.generativeModeEnabled.load(),
+                                      juce::dontSendNotification);
+    generativeToggle.onClick = [this]
+    {
+        processor.generativeModeEnabled.store (generativeToggle.getToggleState());
+    };
+
+    addAndMakeVisible (probabilitySliderLabel);
+    probabilitySliderLabel.setText ("Random slice chance", juce::dontSendNotification);
+    probabilitySliderLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (probabilitySlider);
+    probabilitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    probabilitySlider.setRange (0.0, 1.0, 0.01);
+    probabilitySlider.setValue (processor.randomSliceProbability.load(), juce::dontSendNotification);
+    probabilitySlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+    probabilitySlider.onValueChange = [this]
+    {
+        processor.randomSliceProbability.store ((float) probabilitySlider.getValue());
+    };
+
+    setSize (420, 300);
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
@@ -27,7 +49,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 3: slices mapped to MIDI notes",
+    g.drawFittedText ("NeditVST — step 4: basic generative slice triggering",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -39,6 +61,14 @@ void SlicerAudioProcessorEditor::resized()
     loadButton.setBounds (area.removeFromTop (40));
     area.removeFromTop (10);
     statusLabel.setBounds (area.removeFromTop (30));
+    area.removeFromTop (20);
+
+    generativeToggle.setBounds (area.removeFromTop (30));
+    area.removeFromTop (10);
+
+    auto sliderRow = area.removeFromTop (30);
+    probabilitySliderLabel.setBounds (sliderRow.removeFromLeft (140));
+    probabilitySlider.setBounds (sliderRow);
 }
 
 void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)

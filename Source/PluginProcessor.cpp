@@ -25,7 +25,7 @@ void SliceVoice::startNote (int midiNoteNumber, float velocity,
         return;
     }
 
-    const int sliceIndex = processor.getSliceIndexForNote (midiNoteNumber);
+    const int sliceIndex = processor.resolveSliceIndexForNote (midiNoteNumber);
 
     if (sliceIndex < 0)
     {
