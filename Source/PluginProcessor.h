@@ -125,20 +125,45 @@ public:
     double getSampleSampleRate() const { return sampleSampleRate; }
     juce::CriticalSection& getSampleLock() { return sampleLock; }
 
-    //=== Generative layer (Step 4) ===
+    //=== Generative layer (Step 4/5) ===
     // When generativeModeEnabled is on, each note-on has randomSliceProbability
-    // chance of playing a random slice instead of the one strictly mapped to
-    // that key. At 0.0 it behaves identically to Step 3 (always the mapped
-    // slice); at 1.0 every hit is a random slice regardless of which key was
-    // played. Deliberately simple for a first pass — no per-slice weighting
-    // or note-range restrictions yet, just a global chance.
+    // chance of playing a substitute slice instead of the one strictly mapped
+    // to that key. At 0.0 it behaves identically to Step 3 (always the mapped
+    // slice); at 1.0 every hit substitutes regardless of which key was played.
+    //
+    // Which slice gets picked when it does substitute is governed by
+    // sliceWeights (Step 5) — one weight per slice, default 1.0 each, which
+    // means uniform-random (identical to the original Step 4 behaviour)
+    // until the user actually raises or lowers individual weights.
     std::atomic<bool> generativeModeEnabled { false };
     std::atomic<float> randomSliceProbability { 0.3f };
 
+    // Weight for a given slice — how much more/less likely it is to be
+    // picked than an equally-weighted slice when the generative layer
+    // substitutes. 0 effectively excludes a slice from the random pool
+    // (it can still play normally via its mapped note). Not locked
+    // internally, same convention as rootNote — the caller's responsibility
+    // if it matters for their use (UI reads/writes are infrequent and not
+    // sample-accurate critical).
+    float getSliceWeight (int index) const
+    {
+        if (index < 0 || index >= (int) sliceWeights.size())
+            return 1.0f;
+
+        return sliceWeights[(size_t) index];
+    }
+
+    void setSliceWeight (int index, float weight)
+    {
+        if (index >= 0 && index < (int) sliceWeights.size())
+            sliceWeights[(size_t) index] = juce::jmax (0.0f, weight);
+    }
+
     // Voices call this instead of getSliceIndexForNote() directly — it
-    // applies the generative-mode coin-flip on top of the note mapping.
-    // Not thread-locked itself: callers (SliceVoice::startNote) already
-    // hold sampleLock while reading slices, so this rides along with that.
+    // applies the generative-mode coin-flip (and, when it fires, the
+    // per-slice weighting) on top of the note mapping. Not thread-locked
+    // itself: callers (SliceVoice::startNote) already hold sampleLock
+    // while reading slices, so this rides along with that.
     int resolveSliceIndexForNote (int midiNoteNumber)
     {
         const int mappedIndex = getSliceIndexForNote (midiNoteNumber);
@@ -149,13 +174,40 @@ public:
         if (generativeModeEnabled.load() && slices.size() > 1
             && random.nextFloat() < randomSliceProbability.load())
         {
-            return random.nextInt ((int) slices.size());
+            return pickWeightedRandomSlice();
         }
 
         return mappedIndex;
     }
 
 private:
+    // Weighted-random pick across all slices, using sliceWeights. Falls
+    // back to uniform-random if every weight has been zeroed out (rather
+    // than picking nothing, which would just silently drop the hit).
+    int pickWeightedRandomSlice()
+    {
+        float totalWeight = 0.0f;
+
+        for (auto w : sliceWeights)
+            totalWeight += juce::jmax (0.0f, w);
+
+        if (totalWeight <= 0.0f)
+            return random.nextInt ((int) slices.size());
+
+        const float target = random.nextFloat() * totalWeight;
+        float cumulative = 0.0f;
+
+        for (size_t i = 0; i < sliceWeights.size(); ++i)
+        {
+            cumulative += juce::jmax (0.0f, sliceWeights[i]);
+
+            if (target <= cumulative)
+                return (int) i;
+        }
+
+        return (int) sliceWeights.size() - 1; // float rounding fallback
+    }
+
     juce::AudioFormatManager formatManager;
     juce::Synthesiser synth;
 
@@ -167,6 +219,7 @@ private:
 
     TransientDetector transientDetector;
     std::vector<Slice> slices;
+    std::vector<float> sliceWeights; // parallel to slices; reset to 1.0 each on redetectSlices()
     juce::Random random; // only touched from the audio thread (in resolveSliceIndexForNote)
 
     // Middle C by default — first slice sits under the note most people

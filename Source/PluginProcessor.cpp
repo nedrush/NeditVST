@@ -200,6 +200,7 @@ void SlicerAudioProcessor::redetectSlices (float sensitivity, float holdoffMs)
 
     const juce::ScopedLock sl (sampleLock);
     slices = std::move (newSlices);
+    sliceWeights.assign (slices.size(), 1.0f); // reset to even odds on every re-slice
 }
 
 //==============================================================================

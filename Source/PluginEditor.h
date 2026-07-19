@@ -4,10 +4,11 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-/** Step-4 editor: load button, status label, and the generative-mode
-    controls — a toggle plus a probability slider for how often a random
-    slice gets substituted for the mapped one. Waveform display and slice
-    markers are still a later step. */
+/** Step-5 editor: load button, status label, generative-mode controls, and
+    a slice selector + weight slider so individual slices can be made more
+    or less likely to come up when generative mode substitutes. Waveform
+    display and visible slice markers are still a later step — for now the
+    slice selector is just "Slice 1", "Slice 2", etc. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener
 {
@@ -21,6 +22,7 @@ public:
 private:
     void buttonClicked (juce::Button* button) override;
     void chooseAndLoadFile();
+    void refreshSliceWeightControls(); // repopulates the combo box after a load
 
     SlicerAudioProcessor& processor;
 
@@ -30,6 +32,10 @@ private:
     juce::ToggleButton generativeToggle { "Generative Mode" };
     juce::Slider probabilitySlider;
     juce::Label probabilitySliderLabel;
+
+    juce::ComboBox sliceWeightSelector;
+    juce::Slider sliceWeightSlider;
+    juce::Label sliceWeightLabel;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 
