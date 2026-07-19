@@ -27,7 +27,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 2: load + detect transients (playback still whole-sample)",
+    g.drawFittedText ("NeditVST — step 3: slices mapped to MIDI notes",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -65,10 +65,17 @@ void SlicerAudioProcessorEditor::chooseAndLoadFile()
         {
             processor.loadSample (file);
 
+            const int numSlices = processor.getNumSlices();
+            const int rootNote = processor.getRootNote();
+            const int topNote = rootNote + juce::jmax (0, numSlices - 1);
+
+            const juce::String rootName = juce::MidiMessage::getMidiNoteName (rootNote, true, true, 3);
+            const juce::String topName = juce::MidiMessage::getMidiNoteName (topNote, true, true, 3);
+
             const juce::String text = processor.getLoadedFileName()
-                                     + "  —  " + juce::String (processor.getNumSlices())
-                                     + " slice" + (processor.getNumSlices() == 1 ? "" : "s")
-                                     + " detected";
+                                     + "  —  " + juce::String (numSlices)
+                                     + " slice" + (numSlices == 1 ? "" : "s")
+                                     + "  (" + rootName + " to " + topName + ")";
             statusLabel.setText (text, juce::dontSendNotification);
         }
     });

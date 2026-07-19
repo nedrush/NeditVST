@@ -50,6 +50,7 @@ private:
     SlicerAudioProcessor& processor;
     double samplePosition = 0.0;
     double playbackRatio = 1.0; // sampleRate conversion ratio (source -> host)
+    int sliceEndSample = 0;     // stop playback here, not at the buffer's end
     bool isActive = false;
     float currentVelocity = 1.0f;
 };
@@ -100,6 +101,25 @@ public:
     Slice getSlice (int index) const { return slices[(size_t) index]; }
     const std::vector<Slice>& getSlices() const { return slices; }
 
+    //=== Note-to-slice mapping (Step 3) ===
+    // Simpler-style: rootNote plays slice 0, each semitone above it plays
+    // the next slice along. Notes below the root, or far enough above it
+    // that there's no corresponding slice, simply don't trigger anything.
+    void setRootNote (int newRootNote) { rootNote = newRootNote; }
+    int getRootNote() const { return rootNote; }
+
+    // Returns the slice index for a MIDI note, or -1 if that note doesn't
+    // map to any detected slice (out of range either side).
+    int getSliceIndexForNote (int midiNoteNumber) const
+    {
+        const int index = midiNoteNumber - rootNote;
+
+        if (index < 0 || index >= (int) slices.size())
+            return -1;
+
+        return index;
+    }
+
     //=== Shared read access for voices ===
     const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
     double getSampleSampleRate() const { return sampleSampleRate; }
@@ -122,6 +142,11 @@ private:
 
     TransientDetector transientDetector;
     std::vector<Slice> slices;
+
+    // Middle C by default — first slice sits under the note most people
+    // reach for first. Change via setRootNote() once the editor grows a
+    // control for it.
+    int rootNote = 60;
 
     // Sensible starting defaults — moderate sensitivity, 30ms holdoff to
     // avoid double-triggering on a single drum hit's ringing tail. These'll

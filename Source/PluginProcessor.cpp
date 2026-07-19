@@ -14,7 +14,7 @@ bool SliceVoice::canPlaySound (juce::SynthesiserSound* sound)
     return dynamic_cast<SliceSound*> (sound) != nullptr;
 }
 
-void SliceVoice::startNote (int /*midiNoteNumber*/, float velocity,
+void SliceVoice::startNote (int midiNoteNumber, float velocity,
                              juce::SynthesiserSound*, int /*currentPitchWheelPosition*/)
 {
     const juce::ScopedLock sl (processor.getSampleLock());
@@ -25,7 +25,19 @@ void SliceVoice::startNote (int /*midiNoteNumber*/, float velocity,
         return;
     }
 
-    samplePosition = 0.0;
+    const int sliceIndex = processor.getSliceIndexForNote (midiNoteNumber);
+
+    if (sliceIndex < 0)
+    {
+        // No slice mapped to this note (below the root, or past the last
+        // slice) — don't sound anything.
+        isActive = false;
+        return;
+    }
+
+    const Slice slice = processor.getSlice (sliceIndex);
+    samplePosition = (double) slice.startSample;
+    sliceEndSample = slice.endSample;
     currentVelocity = velocity;
 
     const double hostSampleRate = getSampleRate();
@@ -37,10 +49,10 @@ void SliceVoice::startNote (int /*midiNoteNumber*/, float velocity,
 
 void SliceVoice::stopNote (float /*velocity*/, bool allowTailOff)
 {
-    // Step 1 behaviour: notes play the whole sample through regardless of
-    // note-off (like a "one-shot" trigger). We still need to respond to
-    // stopNote so the Synthesiser can steal/recycle the voice if the host
-    // asks for it without tail-off.
+    // Notes still play their slice through to its end regardless of
+    // note-off (one-shot triggering, same as Step 1). We still need to
+    // respond to stopNote so the Synthesiser can steal/recycle the voice
+    // if the host asks for it without tail-off.
     if (! allowTailOff)
     {
         isActive = false;
@@ -70,11 +82,15 @@ void SliceVoice::renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
         return;
     }
 
+    // Clamp to the buffer regardless — defends against a slice boundary
+    // left stale after a new (shorter) sample was loaded mid-note.
+    const int playbackEnd = juce::jmin (sliceEndSample, sourceLength);
+
     const int outChannels = outputBuffer.getNumChannels();
 
     for (int i = 0; i < numSamples; ++i)
     {
-        if (samplePosition >= (double) (sourceLength - 1))
+        if (samplePosition >= (double) (playbackEnd - 1))
         {
             isActive = false;
             clearCurrentNote();
