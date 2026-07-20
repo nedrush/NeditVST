@@ -177,6 +177,26 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     const bool clockMode = (triggerMode.load() == TriggerMode::clock);
 
+    // Time-Stretch (Step 17): grain scheduling derived from the same
+    // playbackRate math above — a grain spawns every outputHopSamples
+    // (host domain, half the grain length for the fixed 50% overlap),
+    // sourceHopSamples further into the source than the last one, which
+    // works out to exactly the same average source-consumption rate as
+    // playbackRate. Each grain itself only gets srConversionRatio applied
+    // (sample-rate matching, not a pitch effect) — never repitchRatio —
+    // which is what keeps pitch fixed regardless of tempo.
+    const bool timeStretchMode = (pitchMode.load() == PitchMode::timeStretch);
+    const double srConversionRatio = sampleSampleRate / hostSampleRate;
+    const double grainSizeHostSamples = (double) grainSizeMs.load() / 1000.0 * hostSampleRate;
+    const double outputHopSamples = grainSizeHostSamples * 0.5; // fixed 50% overlap, not exposed
+    const double sourceHopSamples = outputHopSamples * srConversionRatio * repitchRatio;
+    const GranularStretcher::WindowShape grainWindowShapeForBlock =
+        (grainWindowShape.load() == GrainWindowShape::hann) ? GranularStretcher::WindowShape::hann
+                                                              : GranularStretcher::WindowShape::triangular;
+
+    if (granularNeedsReseed.exchange (false))
+        granularStretcher.reset (currentPosition); // pitch mode changed mid-pick — reseed from wherever we are now
+
     // Only Clock mode needs the host's beat position — Slice Length mode
     // paces itself purely from slice content length and never looks at ppq.
     double ppqStart = 0.0;
@@ -206,6 +226,14 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     for (int i = 0; i < numSamples; ++i)
     {
+        // Set true whenever a fresh pick begins this sample (new slice
+        // chosen, or a Clock-mode retrigger) — the cue to reseed the
+        // granular engine so it starts a new grain right at the pick's
+        // start rather than mid-grain from whatever the last pick left it
+        // doing. Reset unconditionally, regardless of pitch mode, so it's
+        // already in sync if the user switches mode later mid-stream.
+        bool pickJustStarted = false;
+
         if (clockMode)
         {
             const double samplePpq = ppqStart + (double) i * ppqPerSample;
@@ -234,6 +262,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     currentPosition = (double) slice.startSample;
                     currentEndSample = slice.endSample;
                     hasCurrentPick = true;
+                    pickJustStarted = true;
                     currentlyPlayingSliceIndexForUI.store (clockCurrentSliceIndex);
 
                     samplesSincePickStart = 0.0;
@@ -282,6 +311,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 currentPosition = (double) slice.startSample;
                 currentEndSample = slice.endSample;
                 hasCurrentPick = true;
+                pickJustStarted = true;
                 currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
 
                 samplesSincePickStart = 0.0;
@@ -293,6 +323,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             }
         }
 
+        if (pickJustStarted)
+            granularStretcher.reset (currentPosition); // matches whichever mode's active; harmless if unused this pick
+
         // Shared render step for both modes: only output a sample while
         // we're within the current pick's bounds. In Clock mode, once a
         // short slice naturally finishes before the next tick, this
@@ -300,13 +333,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         // next forced retrigger resets currentPosition.
         if (hasCurrentPick && currentPosition < (double) (juce::jmin (currentEndSample, sourceLength) - 1))
         {
-            const int idx0 = (int) currentPosition;
-            const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
-            const float frac = (float) (currentPosition - (double) idx0);
-
             // Fade gain: clamp each fade to at most half this pick's own
             // (effective) length, so a very short slice/tick can't have
             // overlapping/inverted fades that would silence it entirely.
+            // Shared by both pitch modes — an overall envelope wrapped
+            // around whichever render step produced the dry sample below.
             const double halfPickLength = currentPickLengthInHostSamples * 0.5;
             const double fadeInSamples = juce::jmin (fadeInSamplesRequested, halfPickLength);
             const double fadeOutSamples = juce::jmin (fadeOutSamplesRequested, halfPickLength);
@@ -322,14 +353,35 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             gain = juce::jlimit (0.0, 1.0, gain);
 
-            for (int outCh = 0; outCh < outChannels; ++outCh)
+            if (timeStretchMode)
             {
-                const int srcCh = juce::jmin (outCh, sourceChannels - 1);
-                const float s0 = sampleBuffer.getSample (srcCh, idx0);
-                const float s1 = sampleBuffer.getSample (srcCh, idx1);
-                const float sample = (s0 + frac * (s1 - s0)) * (float) gain;
+                float channelSums[GranularStretcher::maxChannels] = {};
+                granularStretcher.renderAndAdvance (sampleBuffer, sourceChannels,
+                                                     outputHopSamples, sourceHopSamples,
+                                                     grainSizeHostSamples, srConversionRatio,
+                                                     grainWindowShapeForBlock, channelSums);
 
-                buffer.addSample (outCh, i, sample);
+                for (int outCh = 0; outCh < outChannels; ++outCh)
+                {
+                    const int srcCh = juce::jmin (juce::jmin (outCh, sourceChannels - 1), GranularStretcher::maxChannels - 1);
+                    buffer.addSample (outCh, i, channelSums[srcCh] * (float) gain);
+                }
+            }
+            else
+            {
+                const int idx0 = (int) currentPosition;
+                const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
+                const float frac = (float) (currentPosition - (double) idx0);
+
+                for (int outCh = 0; outCh < outChannels; ++outCh)
+                {
+                    const int srcCh = juce::jmin (outCh, sourceChannels - 1);
+                    const float s0 = sampleBuffer.getSample (srcCh, idx0);
+                    const float s1 = sampleBuffer.getSample (srcCh, idx1);
+                    const float sample = (s0 + frac * (s1 - s0)) * (float) gain;
+
+                    buffer.addSample (outCh, i, sample);
+                }
             }
 
             currentPosition += playbackRate;

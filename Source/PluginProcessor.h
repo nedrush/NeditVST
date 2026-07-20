@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "TransientDetector.h"
+#include "GranularStretcher.h"
 
 //==============================================================================
 // STEP 6/8: transport-synced generative playback — no MIDI, no keyboard.
@@ -306,6 +307,39 @@ public:
             subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
+    //=== Pitch mode (Step 17) ===
+    // Independent of Trigger Mode — only changes HOW a pick's audio gets
+    // rendered, never when slices get picked/retriggered or how they're
+    // weighted. The scheduling logic above (weighted picks, Clock-mode
+    // retriggers, fades) is shared unchanged by both:
+    //   repitch — today's varispeed behaviour: a single read pointer
+    //     advances through the source at playbackRate, so pitch follows
+    //     playback speed.
+    //   timeStretch — lightweight overlap-add granular synthesis (see
+    //     GranularStretcher): short windowed grains play at the source's
+    //     native, sample-rate-corrected-only rate (pitch-preserving),
+    //     while their START positions get spaced to track tempo, so pitch
+    //     stays fixed regardless of speed.
+    enum class PitchMode { repitch, timeStretch };
+
+    void setPitchMode (PitchMode mode)
+    {
+        pitchMode.store (mode);
+        granularNeedsReseed.store (true); // reseed the grain engine mid-pick, from wherever playback currently is
+    }
+
+    PitchMode getPitchMode() const { return pitchMode.load(); }
+
+    // Grain length for Time-Stretch mode. Overlap is fixed at 50% (not
+    // exposed) to keep the UI minimal.
+    void setGrainSizeMs (float ms) { grainSizeMs.store (juce::jlimit (20.0f, 150.0f, ms)); }
+    float getGrainSizeMs() const { return grainSizeMs.load(); }
+
+    enum class GrainWindowShape { hann, triangular };
+
+    void setGrainWindowShape (GrainWindowShape shape) { grainWindowShape.store (shape); }
+    GrainWindowShape getGrainWindowShape() const { return grainWindowShape.load(); }
+
 private:
     // Weighted-random pick across a list of weights. Falls back to
     // uniform-random if every weight is 0 (rather than picking nothing
@@ -432,6 +466,17 @@ private:
     // Reset every time a new pick starts.
     double samplesSincePickStart = 0.0;
     double currentPickLengthInHostSamples = 0.0;
+
+    // Pitch mode (Step 17) — Time-Stretch state. granularStretcher is
+    // reseeded from currentPosition every time a new pick starts
+    // (regardless of which mode is active, so switching mid-pick always
+    // finds it already in sync) and again, mid-pick, whenever the mode
+    // itself changes (granularNeedsReseed).
+    std::atomic<PitchMode> pitchMode { PitchMode::repitch };
+    std::atomic<float> grainSizeMs { 60.0f };
+    std::atomic<GrainWindowShape> grainWindowShape { GrainWindowShape::hann };
+    std::atomic<bool> granularNeedsReseed { false };
+    GranularStretcher granularStretcher;
 
     // Sensible starting defaults — moderate sensitivity, 30ms holdoff to
     // avoid double-triggering on a single drum hit's ringing tail.

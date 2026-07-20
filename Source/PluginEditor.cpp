@@ -2,7 +2,7 @@
 #include "PluginEditor.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p)
+    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p)
 {
     addAndMakeVisible (loadButton);
     loadButton.addListener (this);
@@ -45,6 +45,53 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     addAndMakeVisible (calculatedBpmLabel);
     calculatedBpmLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (pitchModeLabel);
+    pitchModeLabel.setText ("Pitch mode", juce::dontSendNotification);
+    pitchModeLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (pitchModeSelector);
+    pitchModeSelector.addItem ("Repitch", 1);
+    pitchModeSelector.addItem ("Time-Stretch", 2);
+    pitchModeSelector.setSelectedId (processor.getPitchMode() == SlicerAudioProcessor::PitchMode::timeStretch ? 2 : 1,
+                                      juce::dontSendNotification);
+    pitchModeSelector.onChange = [this]
+    {
+        const bool timeStretch = pitchModeSelector.getSelectedId() == 2;
+        processor.setPitchMode (timeStretch ? SlicerAudioProcessor::PitchMode::timeStretch
+                                             : SlicerAudioProcessor::PitchMode::repitch);
+        updatePitchModeVisibility();
+    };
+
+    addAndMakeVisible (grainSizeLabel);
+    grainSizeLabel.setText ("Grain size (ms)", juce::dontSendNotification);
+    grainSizeLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (grainSizeSlider);
+    grainSizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    grainSizeSlider.setRange (20.0, 150.0, 1.0);
+    grainSizeSlider.setValue (processor.getGrainSizeMs(), juce::dontSendNotification);
+    grainSizeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+    grainSizeSlider.onValueChange = [this]
+    {
+        processor.setGrainSizeMs ((float) grainSizeSlider.getValue());
+    };
+
+    addAndMakeVisible (windowShapeLabel);
+    windowShapeLabel.setText ("Window shape", juce::dontSendNotification);
+    windowShapeLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (windowShapeSelector);
+    windowShapeSelector.addItem ("Hann", 1);
+    windowShapeSelector.addItem ("Triangular", 2);
+    windowShapeSelector.setSelectedId (processor.getGrainWindowShape() == SlicerAudioProcessor::GrainWindowShape::triangular ? 2 : 1,
+                                        juce::dontSendNotification);
+    windowShapeSelector.onChange = [this]
+    {
+        const bool triangular = windowShapeSelector.getSelectedId() == 2;
+        processor.setGrainWindowShape (triangular ? SlicerAudioProcessor::GrainWindowShape::triangular
+                                                    : SlicerAudioProcessor::GrainWindowShape::hann);
+    };
 
     addAndMakeVisible (sensitivityLabel);
     sensitivityLabel.setText ("Transient sensitivity", juce::dontSendNotification);
@@ -144,42 +191,18 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     subdivisionTableLabel.setText ("Subdivision probability", juce::dontSendNotification);
     subdivisionTableLabel.setJustificationType (juce::Justification::centredLeft);
 
-    subdivisionContent.setSize (numSubdivisionSliders * subdivisionCellWidth, subdivisionCellHeight);
-
-    for (int i = 0; i < numSubdivisionSliders; ++i)
-    {
-        const juce::Rectangle<int> cell (i * subdivisionCellWidth, 0, subdivisionCellWidth, subdivisionCellHeight);
-
-        subdivisionContent.addAndMakeVisible (subdivisionLabels[i]);
-        subdivisionLabels[i].setText (SlicerAudioProcessor::getNoteValueName (i), juce::dontSendNotification);
-        subdivisionLabels[i].setJustificationType (juce::Justification::centred);
-        subdivisionLabels[i].setFont (juce::Font (10.0f));
-        subdivisionLabels[i].setBounds (cell.withY (cell.getBottom() - 16).withHeight (16));
-
-        subdivisionContent.addAndMakeVisible (subdivisionSliders[i]);
-        subdivisionSliders[i].setSliderStyle (juce::Slider::LinearVertical);
-        subdivisionSliders[i].setRange (0.0, 1.0, 0.01);
-        subdivisionSliders[i].setValue (processor.getSubdivisionProbability (i), juce::dontSendNotification);
-        subdivisionSliders[i].setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-        subdivisionSliders[i].setBounds (cell.withHeight (cell.getHeight() - 16).reduced (4, 0));
-
-        const int index = i; // capture by value for the lambda
-        subdivisionSliders[i].onValueChange = [this, index]
-        {
-            processor.setSubdivisionProbability (index, (float) subdivisionSliders[index].getValue());
-        };
-    }
-
-    addAndMakeVisible (subdivisionViewport);
-    subdivisionViewport.setViewedComponent (&subdivisionContent, false); // we own it, don't let the viewport delete it
-    subdivisionViewport.setScrollBarsShown (false, true); // horizontal only
+    addAndMakeVisible (subdivisionGrid);
 
     updateTriggerModeVisibility();
+    updatePitchModeVisibility();
 
     addAndMakeVisible (waveformDisplay);
     waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
 
-    setSize (600, 840);
+    // Showing all note-value rows at once (no more horizontal scrolling)
+    // needs more vertical space than the old 90px strip did, and the new
+    // Pitch mode row + reserved Time-Stretch controls need more still.
+    setSize (600, 880 + SubdivisionProbabilityGrid::getPreferredHeight());
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
@@ -196,7 +219,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 15: full Max/M4L rate palette (128n-1n)",
+    g.drawFittedText ("NeditVST — step 17: time-stretch pitch mode (granular)",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -218,6 +241,21 @@ void SlicerAudioProcessorEditor::resized()
     loopLengthSlider.setBounds (loopRow.removeFromLeft (100));
     loopRow.removeFromLeft (10);
     calculatedBpmLabel.setBounds (loopRow);
+    area.removeFromTop (20);
+
+    auto pitchModeRow = area.removeFromTop (30);
+    pitchModeLabel.setBounds (pitchModeRow.removeFromLeft (140));
+    pitchModeSelector.setBounds (pitchModeRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    auto grainSizeRow = area.removeFromTop (30);
+    grainSizeLabel.setBounds (grainSizeRow.removeFromLeft (140));
+    grainSizeSlider.setBounds (grainSizeRow);
+    area.removeFromTop (10);
+
+    auto windowShapeRow = area.removeFromTop (30);
+    windowShapeLabel.setBounds (windowShapeRow.removeFromLeft (140));
+    windowShapeSelector.setBounds (windowShapeRow.removeFromLeft (150));
     area.removeFromTop (20);
 
     auto sensitivityRow = area.removeFromTop (30);
@@ -246,7 +284,7 @@ void SlicerAudioProcessorEditor::resized()
     area.removeFromTop (10);
 
     subdivisionTableLabel.setBounds (area.removeFromTop (20));
-    subdivisionViewport.setBounds (area.removeFromTop (90));
+    subdivisionGrid.setBounds (area.removeFromTop (SubdivisionProbabilityGrid::getPreferredHeight()));
     area.removeFromTop (20);
 
     auto undoRedoRow = area.removeFromTop (30);
@@ -314,7 +352,17 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     clockReferenceLabel.setVisible (clock);
     clockReferenceSelector.setVisible (clock);
     subdivisionTableLabel.setVisible (clock);
-    subdivisionViewport.setVisible (clock); // hides every slider/label inside it too
+    subdivisionGrid.setVisible (clock);
+}
+
+void SlicerAudioProcessorEditor::updatePitchModeVisibility()
+{
+    const bool timeStretch = pitchModeSelector.getSelectedId() == 2;
+
+    grainSizeLabel.setVisible (timeStretch);
+    grainSizeSlider.setVisible (timeStretch);
+    windowShapeLabel.setVisible (timeStretch);
+    windowShapeSelector.setVisible (timeStretch);
 }
 
 void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()

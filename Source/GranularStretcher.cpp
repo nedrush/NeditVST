@@ -1,0 +1,115 @@
+#include "GranularStretcher.h"
+#include <cmath>
+
+void GranularStretcher::reset (double startSourcePosition)
+{
+    for (auto& g : grains)
+        g.active = false;
+
+    nextGrainSourceStart = startSourcePosition;
+    hopAccumulator = 0.0;
+    pendingImmediateSpawn = true;
+}
+
+void GranularStretcher::spawnGrain (double startSourcePosition)
+{
+    Grain* target = nullptr;
+
+    for (auto& g : grains)
+    {
+        if (! g.active)
+        {
+            target = &g;
+            break;
+        }
+    }
+
+    // Pool exhausted (shouldn't happen at 50% overlap with 4 slots, but
+    // grain size can change live) — steal whichever grain is furthest
+    // into its life, since it's already faded closest to silence.
+    if (target == nullptr)
+    {
+        for (auto& g : grains)
+            if (target == nullptr || g.hostSamplesPlayed > target->hostSamplesPlayed)
+                target = &g;
+    }
+
+    target->active = true;
+    target->sourcePosition = startSourcePosition;
+    target->hostSamplesPlayed = 0.0;
+}
+
+float GranularStretcher::windowGain (double progress, WindowShape shape)
+{
+    progress = juce::jlimit (0.0, 1.0, progress);
+
+    if (shape == WindowShape::hann)
+        return (float) (0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * progress));
+
+    // Triangular: linear ramp up to the midpoint, then back down.
+    return (float) (progress < 0.5 ? (2.0 * progress) : (2.0 * (1.0 - progress)));
+}
+
+void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& sourceBuffer,
+                                           int sourceChannels,
+                                           double outputHopSamples,
+                                           double sourceHopSamples,
+                                           double grainSizeHostSamples,
+                                           double srConversionRatio,
+                                           WindowShape windowShape,
+                                           float* channelSumsOut)
+{
+    sourceChannels = juce::jlimit (0, maxChannels, sourceChannels);
+
+    for (int ch = 0; ch < sourceChannels; ++ch)
+        channelSumsOut[ch] = 0.0f;
+
+    if (pendingImmediateSpawn)
+    {
+        spawnGrain (nextGrainSourceStart);
+        nextGrainSourceStart += sourceHopSamples;
+        pendingImmediateSpawn = false;
+    }
+    else if (outputHopSamples > 0.0)
+    {
+        hopAccumulator += 1.0;
+
+        while (hopAccumulator >= outputHopSamples)
+        {
+            spawnGrain (nextGrainSourceStart);
+            nextGrainSourceStart += sourceHopSamples;
+            hopAccumulator -= outputHopSamples;
+        }
+    }
+
+    const int sourceLength = sourceBuffer.getNumSamples();
+
+    if (sourceLength == 0)
+        return;
+
+    for (auto& grain : grains)
+    {
+        if (! grain.active)
+            continue;
+
+        const double progress = grainSizeHostSamples > 0.0 ? (grain.hostSamplesPlayed / grainSizeHostSamples) : 1.0;
+        const float gain = windowGain (progress, windowShape);
+
+        const int idx0 = juce::jlimit (0, sourceLength - 1, (int) grain.sourcePosition);
+        const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
+        const float frac = (float) (grain.sourcePosition - (double) idx0);
+
+        for (int ch = 0; ch < sourceChannels; ++ch)
+        {
+            const float s0 = sourceBuffer.getSample (ch, idx0);
+            const float s1 = sourceBuffer.getSample (ch, idx1);
+            channelSumsOut[ch] += (s0 + frac * (s1 - s0)) * gain;
+        }
+
+        grain.sourcePosition += srConversionRatio;
+        grain.hostSamplesPlayed += 1.0;
+
+        if (grain.hostSamplesPlayed >= grainSizeHostSamples)
+            grain.active = false;
+    }
+}
