@@ -52,6 +52,16 @@ public:
     bool hasAnalysis() const { return ! derivative.empty(); }
     int getAnalyzedLengthInSamples() const { return numSamples; }
 
+    /** Manual slice points (Step 10) snap to this — searches the cached
+        derivative curve within +/- searchRadiusSamples of targetSample and
+        returns the index of the strongest nearby transient-like peak, even
+        if it's below the current sensitivity threshold. This is exactly
+        what "the transient that would have been detected at higher
+        sensitivity" means: the data was there in the derivative all along,
+        sensitivity just decides where the cutoff line sits. Returns
+        targetSample unchanged if there's no analysis to search. */
+    int findNearestPeak (int targetSample, int searchRadiusSamples) const;
+
 private:
     std::vector<float> envelope;
     std::vector<float> derivative;

@@ -152,3 +152,26 @@ std::vector<Slice> TransientDetector::detectSlices (float sensitivity, float hol
 
     return slices;
 }
+
+int TransientDetector::findNearestPeak (int targetSample, int searchRadiusSamples) const
+{
+    if (! hasAnalysis() || numSamples == 0)
+        return targetSample;
+
+    const int lo = juce::jlimit (0, numSamples - 1, targetSample - searchRadiusSamples);
+    const int hi = juce::jlimit (0, numSamples - 1, targetSample + searchRadiusSamples);
+
+    int bestIndex = juce::jlimit (0, numSamples - 1, targetSample);
+    float bestValue = -1.0f;
+
+    for (int i = lo; i <= hi; ++i)
+    {
+        if (derivative[(size_t) i] > bestValue)
+        {
+            bestValue = derivative[(size_t) i];
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}

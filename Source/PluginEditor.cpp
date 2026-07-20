@@ -2,10 +2,23 @@
 #include "PluginEditor.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p)
+    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p)
 {
     addAndMakeVisible (loadButton);
     loadButton.addListener (this);
+
+    addAndMakeVisible (resetEditsButton);
+    resetEditsButton.addListener (this);
+
+    addAndMakeVisible (undoButton);
+    undoButton.addListener (this);
+    undoButton.setEnabled (false);
+
+    addAndMakeVisible (redoButton);
+    redoButton.addListener (this);
+    redoButton.setEnabled (false);
+
+    startTimerHz (10); // keeps Undo/Redo enabled-state in sync with the processor
 
     addAndMakeVisible (statusLabel);
     statusLabel.setJustificationType (juce::Justification::centred);
@@ -13,58 +26,102 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
                                                 : "No sample loaded",
                           juce::dontSendNotification);
 
-    addAndMakeVisible (generativeToggle);
-    generativeToggle.setToggleState (processor.generativeModeEnabled.load(),
-                                      juce::dontSendNotification);
-    generativeToggle.onClick = [this]
+    addAndMakeVisible (loopLengthLabel);
+    loopLengthLabel.setText ("Loop length (bars)", juce::dontSendNotification);
+    loopLengthLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (loopLengthSlider);
+    loopLengthSlider.setSliderStyle (juce::Slider::IncDecButtons);
+    loopLengthSlider.setRange (1.0, 8.0, 1.0);
+    loopLengthSlider.setValue (processor.getLoopLengthBars(), juce::dontSendNotification);
+    loopLengthSlider.onValueChange = [this]
     {
-        processor.generativeModeEnabled.store (generativeToggle.getToggleState());
+        processor.setLoopLengthBars ((int) loopLengthSlider.getValue());
+
+        const double bpm = processor.getCalculatedOriginalBpm();
+        calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
+                                     juce::dontSendNotification);
     };
 
-    addAndMakeVisible (probabilitySliderLabel);
-    probabilitySliderLabel.setText ("Random slice chance", juce::dontSendNotification);
-    probabilitySliderLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (calculatedBpmLabel);
+    calculatedBpmLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (probabilitySlider);
-    probabilitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    probabilitySlider.setRange (0.0, 1.0, 0.01);
-    probabilitySlider.setValue (processor.randomSliceProbability.load(), juce::dontSendNotification);
-    probabilitySlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
-    probabilitySlider.onValueChange = [this]
+    addAndMakeVisible (sensitivityLabel);
+    sensitivityLabel.setText ("Transient sensitivity", juce::dontSendNotification);
+    sensitivityLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (sensitivitySlider);
+    sensitivitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    sensitivitySlider.setRange (0.0, 1.0, 0.01);
+    sensitivitySlider.setValue (processor.getSensitivity(), juce::dontSendNotification);
+    sensitivitySlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+    sensitivitySlider.onValueChange = [this]
     {
-        processor.randomSliceProbability.store ((float) probabilitySlider.getValue());
+        // Committing (which resets every slice probability and briefly
+        // restarts the chain) on EVERY value change would fire many times
+        // a second while the user scrubs the slider — that's what was
+        // causing the "rapid retriggering" glitch, and it was also
+        // silently wiping any probability edits made on the waveform with
+        // every pixel of movement. While actually dragging, just show a
+        // live PREVIEW of where slices would land — no commit, no sound,
+        // no lost edits — and only commit for real on release (onDragEnd)
+        // or for non-drag changes (keyboard nudge, text box entry).
+        if (sensitivitySlider.isMouseButtonDown())
+        {
+            auto preview = processor.previewSlicesAtSensitivity ((float) sensitivitySlider.getValue());
+            waveformDisplay.showPreviewSlices (preview);
+            return;
+        }
+
+        processor.setSensitivityAndRedetect ((float) sensitivitySlider.getValue());
+        updateAfterSampleOrSliceChange();
+    };
+    sensitivitySlider.onDragEnd = [this]
+    {
+        processor.setSensitivityAndRedetect ((float) sensitivitySlider.getValue());
+        updateAfterSampleOrSliceChange();
     };
 
-    addAndMakeVisible (sliceWeightSelector);
-    sliceWeightSelector.onChange = [this]
+    addAndMakeVisible (fadeInLabel);
+    fadeInLabel.setText ("Fade in (ms)", juce::dontSendNotification);
+    fadeInLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (fadeInSlider);
+    fadeInSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    fadeInSlider.setRange (0.0, 100.0, 0.5);
+    fadeInSlider.setValue (processor.getFadeInMs(), juce::dontSendNotification);
+    fadeInSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+    fadeInSlider.onValueChange = [this]
     {
-        const int index = sliceWeightSelector.getSelectedItemIndex();
-        sliceWeightSlider.setValue (processor.getSliceWeight (index), juce::dontSendNotification);
+        processor.setFadeInMs ((float) fadeInSlider.getValue());
     };
 
-    addAndMakeVisible (sliceWeightLabel);
-    sliceWeightLabel.setText ("Slice weight", juce::dontSendNotification);
-    sliceWeightLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (fadeOutLabel);
+    fadeOutLabel.setText ("Fade out (ms)", juce::dontSendNotification);
+    fadeOutLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (sliceWeightSlider);
-    sliceWeightSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    sliceWeightSlider.setRange (0.0, 2.0, 0.01);
-    sliceWeightSlider.setValue (1.0, juce::dontSendNotification);
-    sliceWeightSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
-    sliceWeightSlider.onValueChange = [this]
+    addAndMakeVisible (fadeOutSlider);
+    fadeOutSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    fadeOutSlider.setRange (0.0, 100.0, 0.5);
+    fadeOutSlider.setValue (processor.getFadeOutMs(), juce::dontSendNotification);
+    fadeOutSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+    fadeOutSlider.onValueChange = [this]
     {
-        const int index = sliceWeightSelector.getSelectedItemIndex();
-        processor.setSliceWeight (index, (float) sliceWeightSlider.getValue());
+        processor.setFadeOutMs ((float) fadeOutSlider.getValue());
     };
 
-    refreshSliceWeightControls();
+    addAndMakeVisible (waveformDisplay);
+    waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
 
-    setSize (420, 380);
+    setSize (560, 480);
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
 {
     loadButton.removeListener (this);
+    resetEditsButton.removeListener (this);
+    undoButton.removeListener (this);
+    redoButton.removeListener (this);
 }
 
 void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
@@ -73,7 +130,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 5: per-slice probability weighting",
+    g.drawFittedText ("NeditVST — step 13: Shift bypasses snap for free placement",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -82,31 +139,70 @@ void SlicerAudioProcessorEditor::resized()
     auto area = getLocalBounds().reduced (20);
     area.removeFromTop (30); // space for the paint() header text
 
-    loadButton.setBounds (area.removeFromTop (40));
+    auto topButtonRow = area.removeFromTop (40);
+    loadButton.setBounds (topButtonRow.removeFromLeft (topButtonRow.getWidth() - 110));
+    topButtonRow.removeFromLeft (10);
+    resetEditsButton.setBounds (topButtonRow);
     area.removeFromTop (10);
     statusLabel.setBounds (area.removeFromTop (30));
     area.removeFromTop (20);
 
-    generativeToggle.setBounds (area.removeFromTop (30));
-    area.removeFromTop (10);
-
-    auto probabilityRow = area.removeFromTop (30);
-    probabilitySliderLabel.setBounds (probabilityRow.removeFromLeft (140));
-    probabilitySlider.setBounds (probabilityRow);
+    auto loopRow = area.removeFromTop (30);
+    loopLengthLabel.setBounds (loopRow.removeFromLeft (140));
+    loopLengthSlider.setBounds (loopRow.removeFromLeft (100));
+    loopRow.removeFromLeft (10);
+    calculatedBpmLabel.setBounds (loopRow);
     area.removeFromTop (20);
 
-    sliceWeightSelector.setBounds (area.removeFromTop (30));
+    auto sensitivityRow = area.removeFromTop (30);
+    sensitivityLabel.setBounds (sensitivityRow.removeFromLeft (140));
+    sensitivitySlider.setBounds (sensitivityRow);
+    area.removeFromTop (20);
+
+    auto fadeInRow = area.removeFromTop (30);
+    fadeInLabel.setBounds (fadeInRow.removeFromLeft (140));
+    fadeInSlider.setBounds (fadeInRow);
     area.removeFromTop (10);
 
-    auto weightRow = area.removeFromTop (30);
-    sliceWeightLabel.setBounds (weightRow.removeFromLeft (140));
-    sliceWeightSlider.setBounds (weightRow);
+    auto fadeOutRow = area.removeFromTop (30);
+    fadeOutLabel.setBounds (fadeOutRow.removeFromLeft (140));
+    fadeOutSlider.setBounds (fadeOutRow);
+    area.removeFromTop (20);
+
+    auto undoRedoRow = area.removeFromTop (30);
+    undoButton.setBounds (undoRedoRow.removeFromLeft (100));
+    undoRedoRow.removeFromLeft (10);
+    redoButton.setBounds (undoRedoRow.removeFromLeft (100));
+    area.removeFromTop (10);
+
+    waveformDisplay.setBounds (area); // takes up all remaining space
 }
 
 void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
 {
     if (button == &loadButton)
         chooseAndLoadFile();
+    else if (button == &resetEditsButton)
+    {
+        processor.resetAllManualEdits();
+        updateAfterSampleOrSliceChange();
+    }
+    else if (button == &undoButton)
+    {
+        processor.undoLastEdit();
+        updateAfterSampleOrSliceChange();
+    }
+    else if (button == &redoButton)
+    {
+        processor.redoLastEdit();
+        updateAfterSampleOrSliceChange();
+    }
+}
+
+void SlicerAudioProcessorEditor::timerCallback()
+{
+    undoButton.setEnabled (processor.canUndoEdit());
+    redoButton.setEnabled (processor.canRedoEdit());
 }
 
 void SlicerAudioProcessorEditor::chooseAndLoadFile()
@@ -126,37 +222,22 @@ void SlicerAudioProcessorEditor::chooseAndLoadFile()
         if (file.existsAsFile())
         {
             processor.loadSample (file);
-
-            const int numSlices = processor.getNumSlices();
-            const int rootNote = processor.getRootNote();
-            const int topNote = rootNote + juce::jmax (0, numSlices - 1);
-
-            const juce::String rootName = juce::MidiMessage::getMidiNoteName (rootNote, true, true, 3);
-            const juce::String topName = juce::MidiMessage::getMidiNoteName (topNote, true, true, 3);
-
-            const juce::String text = processor.getLoadedFileName()
-                                     + "  —  " + juce::String (numSlices)
-                                     + " slice" + (numSlices == 1 ? "" : "s")
-                                     + "  (" + rootName + " to " + topName + ")";
-            statusLabel.setText (text, juce::dontSendNotification);
-
-            refreshSliceWeightControls();
+            updateAfterSampleOrSliceChange();
         }
     });
 }
 
-void SlicerAudioProcessorEditor::refreshSliceWeightControls()
+void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()
 {
-    sliceWeightSelector.clear (juce::dontSendNotification);
-
     const int numSlices = processor.getNumSlices();
+    const juce::String text = processor.getLoadedFileName()
+                             + "  —  " + juce::String (numSlices)
+                             + " slice" + (numSlices == 1 ? "" : "s");
+    statusLabel.setText (text, juce::dontSendNotification);
 
-    for (int i = 0; i < numSlices; ++i)
-        sliceWeightSelector.addItem ("Slice " + juce::String (i + 1), i + 1); // JUCE item IDs are 1-based
+    const double bpm = processor.getCalculatedOriginalBpm();
+    calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
+                                 juce::dontSendNotification);
 
-    if (numSlices > 0)
-    {
-        sliceWeightSelector.setSelectedItemIndex (0, juce::dontSendNotification);
-        sliceWeightSlider.setValue (processor.getSliceWeight (0), juce::dontSendNotification);
-    }
+    waveformDisplay.refresh();
 }

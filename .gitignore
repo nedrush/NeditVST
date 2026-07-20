@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# JUCE/Projucer build output — fully regenerated every time Projucer saves
+# and Xcode builds, never needs to be tracked. Matches at ANY depth (the
+# leading **/ is what makes this depth-agnostic, unlike the previous
+# version which assumed Builds/ sat directly at the repo root).
+**/Builds/
+**/DerivedData/
+**/JuceLibraryCode/
+
+# Projucer user-specific settings (machine-local, not shared)
+*.jucer.bak
+
+# CMake (if we ever move to a CMake-based build instead of/alongside Projucer)
+**/build/
+**/CMakeCache.txt
+**/CMakeFiles/
+
+# General editor/OS junk
+*.swp
+.vscode/
