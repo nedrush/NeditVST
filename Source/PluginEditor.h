@@ -6,15 +6,15 @@
 #include "SubdivisionProbabilityGrid.h"
 
 //==============================================================================
-/** Step-17 editor: load button, reset-edits safety net, undo/redo, status
+/** Step-18 editor: load button, reset-edits safety net, undo/redo, status
     label, loop-length/sensitivity controls (with a live preview while
     dragging sensitivity), fade controls, pitch mode (Repitch vs
-    Time-Stretch, with its grain size/window shape controls), trigger mode
-    (Slice Length vs Clock, with its clock-reference menu and subdivision
-    probability grid), and the waveform display — which owns slice
-    visualization, drag-and-drop loading, per-slice probability, manual
-    slice add/move/remove, deleting auto-detected transients, a live
-    playhead highlight, and modifier-key hover cues. */
+    Time-Stretch, with its grain size/window shape/pitch shift controls),
+    trigger mode (Slice Length vs Clock, with its clock-reference menu and
+    subdivision probability grid), and the waveform display — which owns
+    slice visualization, drag-and-drop loading, per-slice probability,
+    manual slice add/move/remove, deleting auto-detected transients, a
+    live playhead highlight, and modifier-key hover cues. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -51,11 +51,14 @@ private:
 
     // Time-Stretch-only controls — same reserved-space/hide pattern as the
     // Clock-mode-only controls below (grain overlap is fixed at 50% and
-    // deliberately not exposed here).
+    // deliberately not exposed here). Repitch mode doesn't get a pitch
+    // slider — pitch is already intentionally tied to tempo there.
     juce::Label grainSizeLabel;
     juce::Slider grainSizeSlider;
     juce::Label windowShapeLabel;
     juce::ComboBox windowShapeSelector; // "Hann" / "Triangular"
+    juce::Label pitchShiftLabel;
+    juce::Slider pitchShiftSlider; // semitones, -24 to +24
 
     juce::Label sensitivityLabel;
     juce::Slider sensitivitySlider;

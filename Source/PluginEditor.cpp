@@ -93,6 +93,20 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
                                                     : SlicerAudioProcessor::GrainWindowShape::hann);
     };
 
+    addAndMakeVisible (pitchShiftLabel);
+    pitchShiftLabel.setText ("Pitch shift (semitones)", juce::dontSendNotification);
+    pitchShiftLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (pitchShiftSlider);
+    pitchShiftSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    pitchShiftSlider.setRange (-24.0, 24.0, 1.0);
+    pitchShiftSlider.setValue (processor.getPitchShiftSemitones(), juce::dontSendNotification);
+    pitchShiftSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+    pitchShiftSlider.onValueChange = [this]
+    {
+        processor.setPitchShiftSemitones ((float) pitchShiftSlider.getValue());
+    };
+
     addAndMakeVisible (sensitivityLabel);
     sensitivityLabel.setText ("Transient sensitivity", juce::dontSendNotification);
     sensitivityLabel.setJustificationType (juce::Justification::centredLeft);
@@ -200,9 +214,10 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
 
     // Showing all note-value rows at once (no more horizontal scrolling)
-    // needs more vertical space than the old 90px strip did, and the new
-    // Pitch mode row + reserved Time-Stretch controls need more still.
-    setSize (600, 880 + SubdivisionProbabilityGrid::getPreferredHeight());
+    // needs more vertical space than the old 90px strip did, and the
+    // Pitch mode row + reserved Time-Stretch controls (now including the
+    // pitch shift slider) need more still.
+    setSize (600, 920 + SubdivisionProbabilityGrid::getPreferredHeight());
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
@@ -219,7 +234,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 17: time-stretch pitch mode (granular)",
+    g.drawFittedText ("NeditVST — step 18: time-stretch pitch control",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -256,6 +271,11 @@ void SlicerAudioProcessorEditor::resized()
     auto windowShapeRow = area.removeFromTop (30);
     windowShapeLabel.setBounds (windowShapeRow.removeFromLeft (140));
     windowShapeSelector.setBounds (windowShapeRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    auto pitchShiftRow = area.removeFromTop (30);
+    pitchShiftLabel.setBounds (pitchShiftRow.removeFromLeft (140));
+    pitchShiftSlider.setBounds (pitchShiftRow);
     area.removeFromTop (20);
 
     auto sensitivityRow = area.removeFromTop (30);
@@ -363,6 +383,8 @@ void SlicerAudioProcessorEditor::updatePitchModeVisibility()
     grainSizeSlider.setVisible (timeStretch);
     windowShapeLabel.setVisible (timeStretch);
     windowShapeSelector.setVisible (timeStretch);
+    pitchShiftLabel.setVisible (timeStretch);
+    pitchShiftSlider.setVisible (timeStretch);
 }
 
 void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()

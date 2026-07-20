@@ -10,8 +10,11 @@
     through the source at `playbackRate`, so pitch follows playback speed.
     This class is the alternative: it plays short, windowed "grains" of the
     source at their native, sample-rate-corrected-only rate (pitch stays
-    fixed), while spacing the grains' START positions apart to track tempo
-    instead — classic overlap-add granular synthesis, no FFT/phase vocoder.
+    fixed relative to the source), while spacing the grains' START
+    positions apart to track tempo instead — classic overlap-add granular
+    synthesis, no FFT/phase vocoder. An optional pitchRatio (Step 18) can
+    then shift that fixed pitch up or down without touching how the grains
+    are scheduled, so stretch amount and pitch stay independent.
 
     Owns no reference to the source buffer or to any scheduling state
     (which slice is picked, when the next one gets triggered) — that stays
@@ -34,15 +37,23 @@ public:
     // Stretch mode is selected. Spawns new grains on schedule (every
     // outputHopSamples, sourceHopSamples further into the source than the
     // previous grain's start), advances every active grain by
-    // srConversionRatio, and adds this sample's summed windowed output
-    // into channelSumsOut[0 .. sourceChannels-1] (sourceChannels clamped
-    // to maxChannels; caller must clear/own that buffer's lifetime).
+    // srConversionRatio * pitchRatio, and adds this sample's summed
+    // windowed output into channelSumsOut[0 .. sourceChannels-1]
+    // (sourceChannels clamped to maxChannels; caller must clear/own that
+    // buffer's lifetime).
+    //
+    // pitchRatio (Step 18) only scales each grain's own internal
+    // read-rate — it has no effect on outputHopSamples/sourceHopSamples,
+    // which is what keeps stretch amount and pitch independently
+    // controllable. pitchRatio == 1.0 is a complete no-op (matches
+    // pre-Step-18 behaviour exactly).
     void renderAndAdvance (const juce::AudioBuffer<float>& sourceBuffer,
                             int sourceChannels,
                             double outputHopSamples,
                             double sourceHopSamples,
                             double grainSizeHostSamples,
                             double srConversionRatio,
+                            double pitchRatio,
                             WindowShape windowShape,
                             float* channelSumsOut);
 

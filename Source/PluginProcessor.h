@@ -340,6 +340,13 @@ public:
     void setGrainWindowShape (GrainWindowShape shape) { grainWindowShape.store (shape); }
     GrainWindowShape getGrainWindowShape() const { return grainWindowShape.load(); }
 
+    // Time-Stretch-only pitch control (Step 18) — a multiplier on each
+    // grain's own internal read-rate, entirely separate from the hop
+    // scheduling above that controls stretch amount. 0 semitones is a
+    // complete no-op (pitchRatio == 1.0), same as before this existed.
+    void setPitchShiftSemitones (float semitones) { pitchShiftSemitones.store (juce::jlimit (-24.0f, 24.0f, semitones)); }
+    float getPitchShiftSemitones() const { return pitchShiftSemitones.load(); }
+
 private:
     // Weighted-random pick across a list of weights. Falls back to
     // uniform-random if every weight is 0 (rather than picking nothing
@@ -475,6 +482,7 @@ private:
     std::atomic<PitchMode> pitchMode { PitchMode::repitch };
     std::atomic<float> grainSizeMs { 60.0f };
     std::atomic<GrainWindowShape> grainWindowShape { GrainWindowShape::hann };
+    std::atomic<float> pitchShiftSemitones { 0.0f };
     std::atomic<bool> granularNeedsReseed { false };
     GranularStretcher granularStretcher;
 

@@ -56,6 +56,7 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
                                            double sourceHopSamples,
                                            double grainSizeHostSamples,
                                            double srConversionRatio,
+                                           double pitchRatio,
                                            WindowShape windowShape,
                                            float* channelSumsOut)
 {
@@ -106,7 +107,11 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
             channelSumsOut[ch] += (s0 + frac * (s1 - s0)) * gain;
         }
 
-        grain.sourcePosition += srConversionRatio;
+        // pitchRatio only scales this per-grain read-rate — it never
+        // touches outputHopSamples/sourceHopSamples (the hop scheduling
+        // above), which is what keeps stretch amount and pitch
+        // independently controllable. pitchRatio == 1.0 is a no-op.
+        grain.sourcePosition += srConversionRatio * pitchRatio;
         grain.hostSamplesPlayed += 1.0;
 
         if (grain.hostSamplesPlayed >= grainSizeHostSamples)

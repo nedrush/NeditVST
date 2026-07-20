@@ -1,9 +1,10 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
-#include <array>
 
 namespace
 {
@@ -194,6 +195,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         (grainWindowShape.load() == GrainWindowShape::hann) ? GranularStretcher::WindowShape::hann
                                                               : GranularStretcher::WindowShape::triangular;
 
+    // Pitch control (Step 18): scales only each grain's own internal
+    // read-rate (below, in renderAndAdvance) — never outputHopSamples or
+    // sourceHopSamples above, which is what keeps stretch amount and
+    // pitch independently controllable. 0 semitones -> pitchRatio == 1.0,
+    // a complete no-op, same as before this existed.
+    const double pitchRatio = std::pow (2.0, (double) pitchShiftSemitones.load() / 12.0);
+
     if (granularNeedsReseed.exchange (false))
         granularStretcher.reset (currentPosition); // pitch mode changed mid-pick — reseed from wherever we are now
 
@@ -358,7 +366,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 float channelSums[GranularStretcher::maxChannels] = {};
                 granularStretcher.renderAndAdvance (sampleBuffer, sourceChannels,
                                                      outputHopSamples, sourceHopSamples,
-                                                     grainSizeHostSamples, srConversionRatio,
+                                                     grainSizeHostSamples, srConversionRatio, pitchRatio,
                                                      grainWindowShapeForBlock, channelSums);
 
                 for (int outCh = 0; outCh < outChannels; ++outCh)
