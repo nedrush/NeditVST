@@ -5,12 +5,14 @@
 #include "WaveformDisplay.h"
 
 //==============================================================================
-/** Step-12 editor: load button, reset-edits safety net, undo/redo, status
+/** Step-14 editor: load button, reset-edits safety net, undo/redo, status
     label, loop-length/sensitivity controls (with a live preview while
-    dragging sensitivity), fade controls, and the waveform display — which
-    owns slice visualization, drag-and-drop loading, per-slice probability,
-    manual slice add/move/remove, deleting auto-detected transients, a
-    live playhead highlight, and a Cmd-hover delete cue. */
+    dragging sensitivity), fade controls, trigger mode (Slice Length vs
+    Clock, with its clock-reference menu and subdivision probability
+    table), and the waveform display — which owns slice visualization,
+    drag-and-drop loading, per-slice probability, manual slice
+    add/move/remove, deleting auto-detected transients, a live playhead
+    highlight, and modifier-key hover cues. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -27,6 +29,7 @@ private:
     void timerCallback() override; // keeps Undo/Redo enabled-state in sync
     void chooseAndLoadFile();
     void updateAfterSampleOrSliceChange(); // refreshes status text, BPM display, and the waveform
+    void updateTriggerModeVisibility(); // shows/hides the Clock-only controls
 
     SlicerAudioProcessor& processor;
 
@@ -47,6 +50,29 @@ private:
     juce::Slider fadeInSlider;
     juce::Label fadeOutLabel;
     juce::Slider fadeOutSlider;
+
+    juce::Label triggerModeLabel;
+    juce::ComboBox triggerModeSelector; // "Slice Length" / "Clock"
+
+    // Clock-mode-only controls — laid out in reserved space, hidden
+    // (setVisible(false)) rather than the window resizing dynamically,
+    // whenever Slice Length mode is selected.
+    juce::Label clockReferenceLabel;
+    juce::ComboBox clockReferenceSelector;
+
+    juce::Label subdivisionTableLabel;
+    static constexpr int numSubdivisionSliders = SlicerAudioProcessor::numNoteValueOptions;
+    juce::Slider subdivisionSliders[numSubdivisionSliders];
+    juce::Label subdivisionLabels[numSubdivisionSliders];
+
+    // 20 note values don't fit as a fixed row at a readable size, so the
+    // sliders live inside a horizontally-scrolling strip instead: fixed
+    // narrow cells inside subdivisionContent, which is wider than the
+    // window and sits inside subdivisionViewport for scrolling/clipping.
+    juce::Viewport subdivisionViewport;
+    juce::Component subdivisionContent;
+    static constexpr int subdivisionCellWidth = 44;
+    static constexpr int subdivisionCellHeight = 70;
 
     WaveformDisplay waveformDisplay;
 

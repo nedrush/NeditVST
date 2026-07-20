@@ -246,33 +246,99 @@ public:
     void setFadeOutMs (float ms) { fadeOutMs.store (juce::jmax (0.0f, ms)); }
     float getFadeOutMs() const { return fadeOutMs.load(); }
 
-private:
-    // Weighted-random pick across all slices, using sliceProbabilities as
-    // weights. Falls back to uniform-random if every weight is 0 (rather
-    // than picking nothing and stalling the chain).
-    int pickWeightedRandomSlice()
+    //=== Trigger mode (Step 14) ===
+    // Two mutually exclusive ways to decide when the next slice-pick
+    // happens:
+    //   sliceLength — today's behaviour, unchanged: the picked slice plays
+    //     in full at its own length, and finishing IS the cue to pick again.
+    //   clock — a fixed outer window (the "clock reference" — e.g. one
+    //     quarter note) picks ONE slice + ONE subdivision rate together at
+    //     the top of the window, then retriggers that same slice from its
+    //     start every subdivision tick for the rest of the window,
+    //     regardless of the slice's own natural length (cut short if
+    //     longer than the tick, trails into silence if shorter). A new
+    //     window always picks fresh.
+    enum class TriggerMode { sliceLength, clock };
+
+    void setTriggerMode (TriggerMode mode)
     {
+        triggerMode.store (mode);
+        clockModeInitialized = false; // force a fresh window/pick on next block
+        clockCurrentPickValid = false;
+    }
+
+    TriggerMode getTriggerMode() const { return triggerMode.load(); }
+
+    // Fixed palette of note values, shared between the outer clock
+    // reference menu and the inner subdivision probability table —
+    // expressed in quarter-note ("beat") units so nothing here needs to
+    // assume a time signature. Matches the standard Max/M4L tempo-relative
+    // rate set (128n up to 1n), capped at one bar as the longest option —
+    // 1nd (1.5 bars) is deliberately excluded.
+    static constexpr int numNoteValueOptions = 20;
+    static juce::String getNoteValueName (int index);
+    static double getNoteValueBeats (int index);
+
+    void setClockReferenceIndex (int index)
+    {
+        clockReferenceIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+    }
+
+    int getClockReferenceIndex() const { return clockReferenceIndex.load(); }
+
+    // Weighted-probability table for which subdivision gets picked each
+    // window in Clock mode — same 0-1 weight semantics as slice weights.
+    float getSubdivisionProbability (int index) const
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        if (index < 0 || index >= (int) subdivisionProbabilities.size())
+            return 1.0f;
+
+        return subdivisionProbabilities[(size_t) index];
+    }
+
+    void setSubdivisionProbability (int index, float probability)
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        if (index >= 0 && index < (int) subdivisionProbabilities.size())
+            subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
+    }
+
+private:
+    // Weighted-random pick across a list of weights. Falls back to
+    // uniform-random if every weight is 0 (rather than picking nothing
+    // and stalling). Used for both slice selection and, in Clock mode,
+    // subdivision selection — same math, different weight lists.
+    int pickWeightedIndex (const std::vector<float>& weights)
+    {
+        if (weights.empty())
+            return -1;
+
         float totalWeight = 0.0f;
 
-        for (auto w : sliceProbabilities)
+        for (auto w : weights)
             totalWeight += juce::jmax (0.0f, w);
 
         if (totalWeight <= 0.0f)
-            return random.nextInt ((int) slices.size());
+            return random.nextInt ((int) weights.size());
 
         const float target = random.nextFloat() * totalWeight;
         float cumulative = 0.0f;
 
-        for (size_t i = 0; i < sliceProbabilities.size(); ++i)
+        for (size_t i = 0; i < weights.size(); ++i)
         {
-            cumulative += juce::jmax (0.0f, sliceProbabilities[i]);
+            cumulative += juce::jmax (0.0f, weights[i]);
 
             if (target <= cumulative)
                 return (int) i;
         }
 
-        return (int) sliceProbabilities.size() - 1; // float rounding fallback
+        return (int) weights.size() - 1; // float rounding fallback
     }
+
+    int pickWeightedRandomSlice() { return pickWeightedIndex (sliceProbabilities); }
 
     // Shared by redetectSlices() and every manual-point mutation: re-runs
     // auto-detection at the given sensitivity, merges the result with the
@@ -331,6 +397,20 @@ private:
     std::atomic<float> currentSensitivity { defaultSensitivity };
     std::atomic<float> fadeInMs { 5.0f };
     std::atomic<float> fadeOutMs { 15.0f };
+
+    std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
+    std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
+    std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
+
+    // Clock-mode scheduling state (audio thread only). A "window" is one
+    // span of the outer clock reference; a "tick" is one subdivision
+    // retrigger within that window.
+    bool clockModeInitialized = false; // false forces a fresh window on next block
+    bool clockCurrentPickValid = false; // false forces a pick even mid-window (very first tick)
+    double nextTickPpq = 0.0;
+    double windowEndPpq = 0.0;
+    int clockCurrentSliceIndex = -1;
+    int clockCurrentSubdivisionIndex = -1;
 
     // Self-chaining playback state — which slice is currently sounding,
     // where we are within it (source sample units), and where it ends.

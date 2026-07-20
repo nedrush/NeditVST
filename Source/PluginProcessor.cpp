@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <limits>
+#include <array>
 
 namespace
 {
@@ -43,6 +44,52 @@ namespace
         std::pair<std::vector<SlicerAudioProcessor::ManualPointInfo>,
                   std::vector<SlicerAudioProcessor::ManualPointInfo>> before, after;
     };
+
+    // Note-value palette shared by the clock-reference menu and the
+    // subdivision probability table (Step 14/15). Matches the standard
+    // Max/M4L tempo-relative rate set, sorted shortest to longest, capped
+    // at 1n (1nd — 1.5 bars — deliberately excluded per the "no longer
+    // than 1 bar" decision). Beats are quarter-note units.
+    struct NoteValueOption { const char* name; double beats; };
+
+    const std::array<NoteValueOption, SlicerAudioProcessor::numNoteValueOptions> noteValueOptions { {
+        { "128n", 1.0 / 32.0 },
+        { "64n",  1.0 / 16.0 },
+        { "32nt", 1.0 / 12.0 },
+        { "64nd", 3.0 / 32.0 },
+        { "32n",  1.0 / 8.0 },
+        { "16nt", 1.0 / 6.0 },
+        { "32nd", 3.0 / 16.0 },
+        { "16n",  1.0 / 4.0 },
+        { "8nt",  1.0 / 3.0 },
+        { "16nd", 3.0 / 8.0 },
+        { "8n",   1.0 / 2.0 },
+        { "4nt",  2.0 / 3.0 },
+        { "8nd",  3.0 / 4.0 },
+        { "4n",   1.0 },
+        { "2nt",  4.0 / 3.0 },
+        { "4nd",  3.0 / 2.0 },
+        { "2n",   2.0 },
+        { "1nt",  8.0 / 3.0 },
+        { "2nd",  3.0 },
+        { "1n",   4.0 }
+    } };
+}
+
+juce::String SlicerAudioProcessor::getNoteValueName (int index)
+{
+    if (index < 0 || index >= numNoteValueOptions)
+        return {};
+
+    return noteValueOptions[(size_t) index].name;
+}
+
+double SlicerAudioProcessor::getNoteValueBeats (int index)
+{
+    if (index < 0 || index >= numNoteValueOptions)
+        return 1.0;
+
+    return noteValueOptions[(size_t) index].beats;
 }
 
 //==============================================================================
@@ -51,6 +98,7 @@ SlicerAudioProcessor::SlicerAudioProcessor()
                            .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
     formatManager.registerBasicFormats();
+    subdivisionProbabilities.assign (numNoteValueOptions, 1.0f);
 }
 
 SlicerAudioProcessor::~SlicerAudioProcessor() = default;
@@ -58,6 +106,8 @@ SlicerAudioProcessor::~SlicerAudioProcessor() = default;
 void SlicerAudioProcessor::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/)
 {
     hasCurrentPick = false;
+    clockModeInitialized = false;
+    clockCurrentPickValid = false;
 }
 
 void SlicerAudioProcessor::releaseResources() {}
@@ -88,6 +138,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     if (! position.hasValue() || ! position->getIsPlaying())
     {
         hasCurrentPick = false; // transport stopped — fresh chain next time it starts
+        clockModeInitialized = false;
+        clockCurrentPickValid = false;
         currentlyPlayingSliceIndexForUI.store (-1);
         return;
     }
@@ -101,7 +153,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // Repitch factor: how much faster/slower to play the source sample so
     // its `loopLengthBars` bars match the host's tempo. >1 = source is
     // slower than host (speed up to fit, pitch rises); <1 = source is
-    // faster than host (slow down, pitch drops).
+    // faster than host (slow down, pitch drops). Applies in both trigger
+    // modes — it's purely a playback-speed/pitch thing, independent of
+    // when triggers happen.
     const double loopLengthQuarterNotes = (double) loopLengthBars.load() * 4.0; // assumes 4/4
     const double sourceLoopLengthSeconds = (double) sampleBuffer.getNumSamples() / sampleSampleRate;
     const double hostLoopLengthSeconds = loopLengthQuarterNotes * (60.0 / hostBpm);
@@ -121,79 +175,166 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const double fadeInSamplesRequested = (double) fadeInMs.load() / 1000.0 * hostSampleRate;
     const double fadeOutSamplesRequested = (double) fadeOutMs.load() / 1000.0 * hostSampleRate;
 
+    const bool clockMode = (triggerMode.load() == TriggerMode::clock);
+
+    // Only Clock mode needs the host's beat position — Slice Length mode
+    // paces itself purely from slice content length and never looks at ppq.
+    double ppqStart = 0.0;
+    double ppqPerSample = 0.0;
+
+    if (clockMode)
+    {
+        ppqStart = position->getPpqPosition().hasValue() ? *position->getPpqPosition() : 0.0;
+        ppqPerSample = (hostBpm / 60.0) / hostSampleRate;
+
+        if (! clockModeInitialized)
+        {
+            // Just entered Clock mode, or transport just started — snap to
+            // the window we're currently inside and force an immediate
+            // pick on the very first sample below.
+            const double windowBeats = getNoteValueBeats (clockReferenceIndex.load());
+            const juce::int64 windowIndex = (juce::int64) std::floor (ppqStart / windowBeats);
+            windowEndPpq = (double) (windowIndex + 1) * windowBeats;
+            nextTickPpq = ppqStart;
+            clockModeInitialized = true;
+        }
+    }
+    else
+    {
+        clockModeInitialized = false; // so re-entering Clock mode later starts fresh
+    }
+
     for (int i = 0; i < numSamples; ++i)
     {
-        // Advance the chain: if nothing's currently playing, or the current
-        // pick has run out, pick a new slice via weighted draw. A guard
-        // against a pathological all-zero-length-slice scenario stalling
-        // forever — extremely unlikely in practice (the detector never
-        // produces zero-length slices) but cheap insurance.
-        int pickAttempts = 0;
-
-        while (! hasCurrentPick
-               || currentPosition >= (double) (juce::jmin (currentEndSample, sourceLength) - 1))
+        if (clockMode)
         {
-            currentSliceIndex = pickWeightedRandomSlice();
+            const double samplePpq = ppqStart + (double) i * ppqPerSample;
 
-            if (currentSliceIndex < 0 || currentSliceIndex >= (int) slices.size())
+            if (samplePpq >= nextTickPpq)
             {
-                hasCurrentPick = false;
-                break;
+                const bool newWindow = ! clockCurrentPickValid || samplePpq >= windowEndPpq;
+
+                if (newWindow)
+                {
+                    clockCurrentSliceIndex = pickWeightedRandomSlice();
+                    clockCurrentSubdivisionIndex = pickWeightedIndex (subdivisionProbabilities);
+                    clockCurrentPickValid = true;
+
+                    const double windowBeats = getNoteValueBeats (clockReferenceIndex.load());
+                    const juce::int64 windowIndex = (juce::int64) std::floor (samplePpq / windowBeats);
+                    windowEndPpq = (double) (windowIndex + 1) * windowBeats;
+                }
+
+                // Retrigger (or first-trigger) this window's slice from its
+                // start — unconditionally, even if it hadn't naturally
+                // finished yet. That's the whole point of Clock mode.
+                if (clockCurrentSliceIndex >= 0 && clockCurrentSliceIndex < (int) slices.size())
+                {
+                    const auto& slice = slices[(size_t) clockCurrentSliceIndex];
+                    currentPosition = (double) slice.startSample;
+                    currentEndSample = slice.endSample;
+                    hasCurrentPick = true;
+                    currentlyPlayingSliceIndexForUI.store (clockCurrentSliceIndex);
+
+                    samplesSincePickStart = 0.0;
+                    const double naturalLengthHostSamples =
+                        (playbackRate > 0.0)
+                            ? ((double) (slice.endSample - slice.startSample) / playbackRate)
+                            : 0.0;
+
+                    // The fade-out needs to anticipate whichever comes
+                    // first — the slice's own natural end, or the forced
+                    // retrigger at the next tick — otherwise a slice that
+                    // gets cut short by the clock never gets a fade-out at
+                    // all, and every retrigger clicks.
+                    const double tickBeats = getNoteValueBeats (clockCurrentSubdivisionIndex);
+                    const double tickLengthHostSamples = tickBeats * (60.0 / hostBpm) * hostSampleRate;
+                    currentPickLengthInHostSamples = juce::jmin (naturalLengthHostSamples, tickLengthHostSamples);
+                }
+                else
+                {
+                    hasCurrentPick = false;
+                }
+
+                const double subdivisionBeats = getNoteValueBeats (clockCurrentSubdivisionIndex);
+                nextTickPpq += juce::jmax (subdivisionBeats, 1.0e-6); // guard against a zero-length tick
+                nextTickPpq = juce::jmin (nextTickPpq, windowEndPpq);
+            }
+        }
+        else
+        {
+            // Slice Length mode (unchanged): pick a fresh slice whenever
+            // nothing's playing or the current one has run its course.
+            int pickAttempts = 0;
+
+            while (! hasCurrentPick
+                   || currentPosition >= (double) (juce::jmin (currentEndSample, sourceLength) - 1))
+            {
+                currentSliceIndex = pickWeightedRandomSlice();
+
+                if (currentSliceIndex < 0 || currentSliceIndex >= (int) slices.size())
+                {
+                    hasCurrentPick = false;
+                    break;
+                }
+
+                const auto& slice = slices[(size_t) currentSliceIndex];
+                currentPosition = (double) slice.startSample;
+                currentEndSample = slice.endSample;
+                hasCurrentPick = true;
+                currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
+
+                samplesSincePickStart = 0.0;
+                const double sourceLengthOfPick = (double) (slice.endSample - slice.startSample);
+                currentPickLengthInHostSamples = (playbackRate > 0.0) ? (sourceLengthOfPick / playbackRate) : 0.0;
+
+                if (++pickAttempts > 1000)
+                    return; // safety bail — render the rest of this block as silence
+            }
+        }
+
+        // Shared render step for both modes: only output a sample while
+        // we're within the current pick's bounds. In Clock mode, once a
+        // short slice naturally finishes before the next tick, this
+        // condition goes false and we correctly render silence until the
+        // next forced retrigger resets currentPosition.
+        if (hasCurrentPick && currentPosition < (double) (juce::jmin (currentEndSample, sourceLength) - 1))
+        {
+            const int idx0 = (int) currentPosition;
+            const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
+            const float frac = (float) (currentPosition - (double) idx0);
+
+            // Fade gain: clamp each fade to at most half this pick's own
+            // (effective) length, so a very short slice/tick can't have
+            // overlapping/inverted fades that would silence it entirely.
+            const double halfPickLength = currentPickLengthInHostSamples * 0.5;
+            const double fadeInSamples = juce::jmin (fadeInSamplesRequested, halfPickLength);
+            const double fadeOutSamples = juce::jmin (fadeOutSamplesRequested, halfPickLength);
+            const double samplesRemaining = currentPickLengthInHostSamples - samplesSincePickStart;
+
+            double gain = 1.0;
+
+            if (fadeInSamples > 0.0 && samplesSincePickStart < fadeInSamples)
+                gain = samplesSincePickStart / fadeInSamples;
+
+            if (fadeOutSamples > 0.0 && samplesRemaining < fadeOutSamples)
+                gain = juce::jmin (gain, samplesRemaining / fadeOutSamples);
+
+            gain = juce::jlimit (0.0, 1.0, gain);
+
+            for (int outCh = 0; outCh < outChannels; ++outCh)
+            {
+                const int srcCh = juce::jmin (outCh, sourceChannels - 1);
+                const float s0 = sampleBuffer.getSample (srcCh, idx0);
+                const float s1 = sampleBuffer.getSample (srcCh, idx1);
+                const float sample = (s0 + frac * (s1 - s0)) * (float) gain;
+
+                buffer.addSample (outCh, i, sample);
             }
 
-            const auto& slice = slices[(size_t) currentSliceIndex];
-            currentPosition = (double) slice.startSample;
-            currentEndSample = slice.endSample;
-            hasCurrentPick = true;
-            currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
-
-            // Fade tracking is in host-output-sample units so a fade stays
-            // a constant number of milliseconds regardless of repitching.
-            samplesSincePickStart = 0.0;
-            const double sourceLengthOfPick = (double) (slice.endSample - slice.startSample);
-            currentPickLengthInHostSamples = (playbackRate > 0.0) ? (sourceLengthOfPick / playbackRate) : 0.0;
-
-            if (++pickAttempts > 1000)
-                return; // safety bail — render the rest of this block as silence
+            currentPosition += playbackRate;
+            samplesSincePickStart += 1.0;
         }
-
-        if (! hasCurrentPick)
-            return;
-
-        const int idx0 = (int) currentPosition;
-        const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
-        const float frac = (float) (currentPosition - (double) idx0);
-
-        // Fade gain: clamp each fade to at most half this pick's own
-        // length, so a very short slice can't get overlapping/inverted
-        // fades that would silence it entirely.
-        const double halfPickLength = currentPickLengthInHostSamples * 0.5;
-        const double fadeInSamples = juce::jmin (fadeInSamplesRequested, halfPickLength);
-        const double fadeOutSamples = juce::jmin (fadeOutSamplesRequested, halfPickLength);
-        const double samplesRemaining = currentPickLengthInHostSamples - samplesSincePickStart;
-
-        double gain = 1.0;
-
-        if (fadeInSamples > 0.0 && samplesSincePickStart < fadeInSamples)
-            gain = samplesSincePickStart / fadeInSamples;
-
-        if (fadeOutSamples > 0.0 && samplesRemaining < fadeOutSamples)
-            gain = juce::jmin (gain, samplesRemaining / fadeOutSamples);
-
-        gain = juce::jlimit (0.0, 1.0, gain);
-
-        for (int outCh = 0; outCh < outChannels; ++outCh)
-        {
-            const int srcCh = juce::jmin (outCh, sourceChannels - 1);
-            const float s0 = sampleBuffer.getSample (srcCh, idx0);
-            const float s1 = sampleBuffer.getSample (srcCh, idx1);
-            const float sample = (s0 + frac * (s1 - s0)) * (float) gain;
-
-            buffer.addSample (outCh, i, sample);
-        }
-
-        currentPosition += playbackRate;
-        samplesSincePickStart += 1.0;
     }
 }
 
@@ -234,6 +375,8 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
         manualPoints.clear(); // positions from the old sample don't mean anything here
         excludedPoints.clear();
         hasCurrentPick = false; // don't let a stale pick read past the new buffer's end
+        clockModeInitialized = false;
+        clockCurrentPickValid = false;
     }
 
     undoManager.clearUndoHistory(); // old undo steps reference positions in a different file now
@@ -255,6 +398,8 @@ void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sens
     slices = mergeOnsetsIntoSlices (autoSlices);
     sliceProbabilities.assign (slices.size(), 1.0f); // default: even odds across all slices
     hasCurrentPick = false; // boundaries changed — force a fresh pick
+    clockModeInitialized = false;
+    clockCurrentPickValid = false;
 }
 
 std::vector<Slice> SlicerAudioProcessor::previewSlicesAtSensitivity (float sensitivity) const

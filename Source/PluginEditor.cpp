@@ -110,10 +110,76 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         processor.setFadeOutMs ((float) fadeOutSlider.getValue());
     };
 
+    addAndMakeVisible (triggerModeLabel);
+    triggerModeLabel.setText ("Trigger mode", juce::dontSendNotification);
+    triggerModeLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (triggerModeSelector);
+    triggerModeSelector.addItem ("Slice Length", 1);
+    triggerModeSelector.addItem ("Clock", 2);
+    triggerModeSelector.setSelectedId (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::clock ? 2 : 1,
+                                        juce::dontSendNotification);
+    triggerModeSelector.onChange = [this]
+    {
+        const bool clock = triggerModeSelector.getSelectedId() == 2;
+        processor.setTriggerMode (clock ? SlicerAudioProcessor::TriggerMode::clock
+                                         : SlicerAudioProcessor::TriggerMode::sliceLength);
+        updateTriggerModeVisibility();
+    };
+
+    addAndMakeVisible (clockReferenceLabel);
+    clockReferenceLabel.setText ("Clock reference", juce::dontSendNotification);
+    clockReferenceLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (clockReferenceSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
+        clockReferenceSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    clockReferenceSelector.setSelectedId (processor.getClockReferenceIndex() + 1, juce::dontSendNotification);
+    clockReferenceSelector.onChange = [this]
+    {
+        processor.setClockReferenceIndex (clockReferenceSelector.getSelectedId() - 1);
+    };
+
+    addAndMakeVisible (subdivisionTableLabel);
+    subdivisionTableLabel.setText ("Subdivision probability", juce::dontSendNotification);
+    subdivisionTableLabel.setJustificationType (juce::Justification::centredLeft);
+
+    subdivisionContent.setSize (numSubdivisionSliders * subdivisionCellWidth, subdivisionCellHeight);
+
+    for (int i = 0; i < numSubdivisionSliders; ++i)
+    {
+        const juce::Rectangle<int> cell (i * subdivisionCellWidth, 0, subdivisionCellWidth, subdivisionCellHeight);
+
+        subdivisionContent.addAndMakeVisible (subdivisionLabels[i]);
+        subdivisionLabels[i].setText (SlicerAudioProcessor::getNoteValueName (i), juce::dontSendNotification);
+        subdivisionLabels[i].setJustificationType (juce::Justification::centred);
+        subdivisionLabels[i].setFont (juce::Font (10.0f));
+        subdivisionLabels[i].setBounds (cell.withY (cell.getBottom() - 16).withHeight (16));
+
+        subdivisionContent.addAndMakeVisible (subdivisionSliders[i]);
+        subdivisionSliders[i].setSliderStyle (juce::Slider::LinearVertical);
+        subdivisionSliders[i].setRange (0.0, 1.0, 0.01);
+        subdivisionSliders[i].setValue (processor.getSubdivisionProbability (i), juce::dontSendNotification);
+        subdivisionSliders[i].setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        subdivisionSliders[i].setBounds (cell.withHeight (cell.getHeight() - 16).reduced (4, 0));
+
+        const int index = i; // capture by value for the lambda
+        subdivisionSliders[i].onValueChange = [this, index]
+        {
+            processor.setSubdivisionProbability (index, (float) subdivisionSliders[index].getValue());
+        };
+    }
+
+    addAndMakeVisible (subdivisionViewport);
+    subdivisionViewport.setViewedComponent (&subdivisionContent, false); // we own it, don't let the viewport delete it
+    subdivisionViewport.setScrollBarsShown (false, true); // horizontal only
+
+    updateTriggerModeVisibility();
+
     addAndMakeVisible (waveformDisplay);
     waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
 
-    setSize (560, 480);
+    setSize (600, 840);
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
@@ -130,7 +196,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 13: Shift bypasses snap for free placement",
+    g.drawFittedText ("NeditVST — step 15: full Max/M4L rate palette (128n-1n)",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -167,6 +233,20 @@ void SlicerAudioProcessorEditor::resized()
     auto fadeOutRow = area.removeFromTop (30);
     fadeOutLabel.setBounds (fadeOutRow.removeFromLeft (140));
     fadeOutSlider.setBounds (fadeOutRow);
+    area.removeFromTop (20);
+
+    auto triggerModeRow = area.removeFromTop (30);
+    triggerModeLabel.setBounds (triggerModeRow.removeFromLeft (140));
+    triggerModeSelector.setBounds (triggerModeRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    auto clockReferenceRow = area.removeFromTop (30);
+    clockReferenceLabel.setBounds (clockReferenceRow.removeFromLeft (140));
+    clockReferenceSelector.setBounds (clockReferenceRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    subdivisionTableLabel.setBounds (area.removeFromTop (20));
+    subdivisionViewport.setBounds (area.removeFromTop (90));
     area.removeFromTop (20);
 
     auto undoRedoRow = area.removeFromTop (30);
@@ -225,6 +305,16 @@ void SlicerAudioProcessorEditor::chooseAndLoadFile()
             updateAfterSampleOrSliceChange();
         }
     });
+}
+
+void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
+{
+    const bool clock = triggerModeSelector.getSelectedId() == 2;
+
+    clockReferenceLabel.setVisible (clock);
+    clockReferenceSelector.setVisible (clock);
+    subdivisionTableLabel.setVisible (clock);
+    subdivisionViewport.setVisible (clock); // hides every slider/label inside it too
 }
 
 void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()
