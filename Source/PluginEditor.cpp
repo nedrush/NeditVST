@@ -2,7 +2,7 @@
 #include "PluginEditor.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p)
+    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p)
 {
     addAndMakeVisible (loadButton);
     loadButton.addListener (this);
@@ -188,6 +188,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         updateTriggerModeVisibility();
     };
 
+    addAndMakeVisible (playbackStyleLabel);
+    playbackStyleLabel.setText ("Playback style", juce::dontSendNotification);
+    playbackStyleLabel.setJustificationType (juce::Justification::centredLeft);
+
+    addAndMakeVisible (playbackStyleGrid);
+
     addAndMakeVisible (clockReferenceLabel);
     clockReferenceLabel.setText ("Clock reference", juce::dontSendNotification);
     clockReferenceLabel.setJustificationType (juce::Justification::centredLeft);
@@ -216,8 +222,9 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     // Showing all note-value rows at once (no more horizontal scrolling)
     // needs more vertical space than the old 90px strip did, and the
     // Pitch mode row + reserved Time-Stretch controls (now including the
-    // pitch shift slider) need more still.
-    setSize (600, 920 + SubdivisionProbabilityGrid::getPreferredHeight());
+    // pitch shift slider) need more still, plus the new (always-visible)
+    // Playback style grid.
+    setSize (600, 996 + SubdivisionProbabilityGrid::getPreferredHeight());
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
@@ -234,7 +241,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 18: time-stretch pitch control",
+    g.drawFittedText ("NeditVST — step 19: playback style (Forward / Ping-Pong)",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -297,6 +304,10 @@ void SlicerAudioProcessorEditor::resized()
     triggerModeLabel.setBounds (triggerModeRow.removeFromLeft (140));
     triggerModeSelector.setBounds (triggerModeRow.removeFromLeft (150));
     area.removeFromTop (10);
+
+    playbackStyleLabel.setBounds (area.removeFromTop (20));
+    playbackStyleGrid.setBounds (area.removeFromTop (PlaybackStyleGrid::getPreferredHeight()));
+    area.removeFromTop (20);
 
     auto clockReferenceRow = area.removeFromTop (30);
     clockReferenceLabel.setBounds (clockReferenceRow.removeFromLeft (140));

@@ -1,6 +1,20 @@
 #include "GranularStretcher.h"
 #include <cmath>
 
+double GranularStretcher::foldPosition (double elapsedSourceSamples, double sliceLength, PlaybackStyle style)
+{
+    if (style == PlaybackStyle::forward || sliceLength <= 0.0)
+        return elapsedSourceSamples;
+
+    const double period = 2.0 * sliceLength;
+    double cycle = std::fmod (elapsedSourceSamples, period);
+
+    if (cycle < 0.0) // defensive -- elapsedSourceSamples should never go negative in practice
+        cycle += period;
+
+    return (cycle < sliceLength) ? cycle : (period - cycle);
+}
+
 void GranularStretcher::reset (double startSourcePosition)
 {
     for (auto& g : grains)
@@ -54,6 +68,9 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
                                            int sourceChannels,
                                            double outputHopSamples,
                                            double sourceHopSamples,
+                                           double sliceStartSample,
+                                           double sliceLength,
+                                           PlaybackStyle style,
                                            double grainSizeHostSamples,
                                            double srConversionRatio,
                                            double pitchRatio,
@@ -65,10 +82,22 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
     for (int ch = 0; ch < sourceChannels; ++ch)
         channelSumsOut[ch] = 0.0f;
 
+    // nextGrainSourceStart marches forward unbounded (same "elapsed since
+    // slice start, unfolded" quantity PluginProcessor's currentPosition
+    // tracks for its own render path) -- foldPosition() is applied only at
+    // the moment a grain actually spawns, so each grain's OWN read still
+    // runs forward at its native rate below; only where consecutive grains
+    // START bounces back and forth for Ping-Pong.
+    const auto spawnAtCurrentMarch = [&]
+    {
+        const double folded = sliceStartSample + foldPosition (nextGrainSourceStart - sliceStartSample, sliceLength, style);
+        spawnGrain (folded);
+        nextGrainSourceStart += sourceHopSamples;
+    };
+
     if (pendingImmediateSpawn)
     {
-        spawnGrain (nextGrainSourceStart);
-        nextGrainSourceStart += sourceHopSamples;
+        spawnAtCurrentMarch();
         pendingImmediateSpawn = false;
     }
     else if (outputHopSamples > 0.0)
@@ -77,8 +106,7 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
 
         while (hopAccumulator >= outputHopSamples)
         {
-            spawnGrain (nextGrainSourceStart);
-            nextGrainSourceStart += sourceHopSamples;
+            spawnAtCurrentMarch();
             hopAccumulator -= outputHopSamples;
         }
     }

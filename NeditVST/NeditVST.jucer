@@ -27,6 +27,10 @@
             file="../Source/GranularStretcher.cpp"/>
       <FILE id="j2Fp8N" name="GranularStretcher.h" compile="0" resource="0"
             file="../Source/GranularStretcher.h"/>
+      <FILE id="q4Wb7K" name="PlaybackStyleGrid.cpp" compile="1" resource="0"
+            file="../Source/PlaybackStyleGrid.cpp"/>
+      <FILE id="s6Hn2Y" name="PlaybackStyleGrid.h" compile="0" resource="0"
+            file="../Source/PlaybackStyleGrid.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

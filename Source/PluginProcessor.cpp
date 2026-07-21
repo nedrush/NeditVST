@@ -75,6 +75,20 @@ namespace
         { "2nd",  3.0 },
         { "1n",   4.0 }
     } };
+
+    // Playback style names (Step 19), indexed the same way the weighted
+    // table stores them.
+    const std::array<const char*, SlicerAudioProcessor::numPlaybackStyleOptions> playbackStyleNames { {
+        "Forward", "Ping-Pong"
+    } };
+}
+
+juce::String SlicerAudioProcessor::getPlaybackStyleName (int index)
+{
+    if (index < 0 || index >= numPlaybackStyleOptions)
+        return {};
+
+    return playbackStyleNames[(size_t) index];
 }
 
 juce::String SlicerAudioProcessor::getNoteValueName (int index)
@@ -100,6 +114,11 @@ SlicerAudioProcessor::SlicerAudioProcessor()
 {
     formatManager.registerBasicFormats();
     subdivisionProbabilities.assign (numNoteValueOptions, 1.0f);
+
+    // Forward-only by default (NOT even odds like the other tables) --
+    // guarantees byte-identical default playback, since Ping-Pong is
+    // never drawn unless the user explicitly turns its weight up.
+    playbackStyleProbabilities = { 1.0f, 0.0f };
 }
 
 SlicerAudioProcessor::~SlicerAudioProcessor() = default;
@@ -254,6 +273,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 {
                     clockCurrentSliceIndex = pickWeightedRandomSlice();
                     clockCurrentSubdivisionIndex = pickWeightedIndex (subdivisionProbabilities);
+                    clockCurrentPlaybackStyle = (pickWeightedIndex (playbackStyleProbabilities) == 1)
+                                                     ? PlaybackStyle::pingPong : PlaybackStyle::forward;
                     clockCurrentPickValid = true;
 
                     const double windowBeats = getNoteValueBeats (clockReferenceIndex.load());
@@ -263,30 +284,46 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                 // Retrigger (or first-trigger) this window's slice from its
                 // start — unconditionally, even if it hadn't naturally
-                // finished yet. That's the whole point of Clock mode.
+                // finished yet. That's the whole point of Clock mode. Every
+                // tick restarts the round trip from the beginning (forward
+                // leg) even within the same window, same as Forward always
+                // restarted from the slice's start on every tick.
                 if (clockCurrentSliceIndex >= 0 && clockCurrentSliceIndex < (int) slices.size())
                 {
                     const auto& slice = slices[(size_t) clockCurrentSliceIndex];
+                    const bool pingPong = (clockCurrentPlaybackStyle == PlaybackStyle::pingPong);
+
+                    currentPlaybackStyle = clockCurrentPlaybackStyle;
+                    currentSliceStartSample = slice.startSample;
+                    currentSliceLength = slice.endSample - slice.startSample;
                     currentPosition = (double) slice.startSample;
-                    currentEndSample = slice.endSample;
+                    currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample) : slice.endSample;
                     hasCurrentPick = true;
                     pickJustStarted = true;
                     currentlyPlayingSliceIndexForUI.store (clockCurrentSliceIndex);
 
                     samplesSincePickStart = 0.0;
                     const double naturalLengthHostSamples =
-                        (playbackRate > 0.0)
-                            ? ((double) (slice.endSample - slice.startSample) / playbackRate)
-                            : 0.0;
+                        (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
+
+                    // Where a Ping-Pong round trip reverses direction —
+                    // always one slice's worth of natural playback time,
+                    // regardless of whether the tick below ends up cutting
+                    // the pick off before ever reaching it. Unused for
+                    // Forward.
+                    currentPickMidpointHostSamples = naturalLengthHostSamples;
+
+                    const double roundTripLengthHostSamples = pingPong ? (2.0 * naturalLengthHostSamples) : naturalLengthHostSamples;
 
                     // The fade-out needs to anticipate whichever comes
-                    // first — the slice's own natural end, or the forced
-                    // retrigger at the next tick — otherwise a slice that
-                    // gets cut short by the clock never gets a fade-out at
-                    // all, and every retrigger clicks.
+                    // first — the slice's own natural (round-trip, for
+                    // Ping-Pong) end, or the forced retrigger at the next
+                    // tick — otherwise a slice that gets cut short by the
+                    // clock never gets a fade-out at all, and every
+                    // retrigger clicks.
                     const double tickBeats = getNoteValueBeats (clockCurrentSubdivisionIndex);
                     const double tickLengthHostSamples = tickBeats * (60.0 / hostBpm) * hostSampleRate;
-                    currentPickLengthInHostSamples = juce::jmin (naturalLengthHostSamples, tickLengthHostSamples);
+                    currentPickLengthInHostSamples = juce::jmin (roundTripLengthHostSamples, tickLengthHostSamples);
                 }
                 else
                 {
@@ -305,7 +342,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             int pickAttempts = 0;
 
             while (! hasCurrentPick
-                   || currentPosition >= (double) (juce::jmin (currentEndSample, sourceLength) - 1))
+                   || currentPosition >= (double) ((currentPlaybackStyle == PlaybackStyle::pingPong
+                                                         ? currentEndSample
+                                                         : juce::jmin (currentEndSample, sourceLength)) - 1))
             {
                 currentSliceIndex = pickWeightedRandomSlice();
 
@@ -315,16 +354,23 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     break;
                 }
 
+                currentPlaybackStyle = (pickWeightedIndex (playbackStyleProbabilities) == 1)
+                                            ? PlaybackStyle::pingPong : PlaybackStyle::forward;
+                const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
+
                 const auto& slice = slices[(size_t) currentSliceIndex];
+                currentSliceStartSample = slice.startSample;
+                currentSliceLength = slice.endSample - slice.startSample;
                 currentPosition = (double) slice.startSample;
-                currentEndSample = slice.endSample;
+                currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample) : slice.endSample;
                 hasCurrentPick = true;
                 pickJustStarted = true;
                 currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
 
                 samplesSincePickStart = 0.0;
-                const double sourceLengthOfPick = (double) (slice.endSample - slice.startSample);
-                currentPickLengthInHostSamples = (playbackRate > 0.0) ? (sourceLengthOfPick / playbackRate) : 0.0;
+                const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
+                currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused for Forward
+                currentPickLengthInHostSamples = pingPong ? (2.0 * naturalLengthHostSamples) : naturalLengthHostSamples;
 
                 if (++pickAttempts > 1000)
                     return; // safety bail — render the rest of this block as silence
@@ -334,12 +380,23 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         if (pickJustStarted)
             granularStretcher.reset (currentPosition); // matches whichever mode's active; harmless if unused this pick
 
+        const bool pingPongActive = (currentPlaybackStyle == PlaybackStyle::pingPong);
+
+        // Ping-Pong's currentEndSample is a full round trip (2x slice
+        // length) and can legitimately run past sourceLength when the
+        // slice sits at the very end of the buffer — that's fine, since
+        // the actual read position below is always the FOLDED one, safely
+        // bounded to the true slice regardless. The sourceLength clamp is
+        // only needed for Forward, where the raw (unfolded) position IS
+        // the read position.
+        const int schedulingEndSample = pingPongActive ? currentEndSample : juce::jmin (currentEndSample, sourceLength);
+
         // Shared render step for both modes: only output a sample while
         // we're within the current pick's bounds. In Clock mode, once a
         // short slice naturally finishes before the next tick, this
         // condition goes false and we correctly render silence until the
         // next forced retrigger resets currentPosition.
-        if (hasCurrentPick && currentPosition < (double) (juce::jmin (currentEndSample, sourceLength) - 1))
+        if (hasCurrentPick && currentPosition < (double) (schedulingEndSample - 1))
         {
             // Fade gain: clamp each fade to at most half this pick's own
             // (effective) length, so a very short slice/tick can't have
@@ -359,13 +416,39 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             if (fadeOutSamples > 0.0 && samplesRemaining < fadeOutSamples)
                 gain = juce::jmin (gain, samplesRemaining / fadeOutSamples);
 
+            // Ping-Pong (Step 19): the bounce point isn't a true edit --
+            // audio isn't symmetric around any given sample, so reversing
+            // direction there clicks just like the pick's own start/end
+            // would without a fade. Treat the midpoint as an internal
+            // boundary and apply the SAME fadeInMs/fadeOutMs envelope
+            // around it: fading out approaching it (mirrors the pick's own
+            // end-fade) and back in leaving it (mirrors the start-fade).
+            // Layered into the same overall `gain`, so it wraps whichever
+            // render path below produced the dry sample -- Repitch or
+            // Time-Stretch alike.
+            if (pingPongActive)
+            {
+                const double distanceBeforeMidpoint = currentPickMidpointHostSamples - samplesSincePickStart;
+                const double distanceAfterMidpoint = samplesSincePickStart - currentPickMidpointHostSamples;
+
+                if (distanceBeforeMidpoint >= 0.0 && distanceBeforeMidpoint < fadeOutSamples)
+                    gain = juce::jmin (gain, distanceBeforeMidpoint / fadeOutSamples);
+
+                if (distanceAfterMidpoint >= 0.0 && distanceAfterMidpoint < fadeInSamples)
+                    gain = juce::jmin (gain, distanceAfterMidpoint / fadeInSamples);
+            }
+
             gain = juce::jlimit (0.0, 1.0, gain);
+
+            const GranularStretcher::PlaybackStyle grainPlaybackStyle =
+                pingPongActive ? GranularStretcher::PlaybackStyle::pingPong : GranularStretcher::PlaybackStyle::forward;
 
             if (timeStretchMode)
             {
                 float channelSums[GranularStretcher::maxChannels] = {};
                 granularStretcher.renderAndAdvance (sampleBuffer, sourceChannels,
                                                      outputHopSamples, sourceHopSamples,
+                                                     (double) currentSliceStartSample, (double) currentSliceLength, grainPlaybackStyle,
                                                      grainSizeHostSamples, srConversionRatio, pitchRatio,
                                                      grainWindowShapeForBlock, channelSums);
 
@@ -377,9 +460,18 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             }
             else
             {
-                const int idx0 = (int) currentPosition;
+                // Shared position-mapping (Step 19): the same foldPosition()
+                // GranularStretcher uses for its own grain-start scheduling,
+                // so Ping-Pong behaves identically regardless of pitch mode.
+                // For Forward this is the identity — foldedReadPosition ==
+                // currentPosition exactly, same as before this existed.
+                const double foldedReadPosition = (double) currentSliceStartSample
+                    + GranularStretcher::foldPosition (currentPosition - (double) currentSliceStartSample,
+                                                        (double) currentSliceLength, grainPlaybackStyle);
+
+                const int idx0 = juce::jlimit (0, sourceLength - 1, (int) foldedReadPosition);
                 const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
-                const float frac = (float) (currentPosition - (double) idx0);
+                const float frac = (float) (foldedReadPosition - (double) idx0);
 
                 for (int outCh = 0; outCh < outChannels; ++outCh)
                 {

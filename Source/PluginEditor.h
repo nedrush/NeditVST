@@ -4,17 +4,20 @@
 #include "PluginProcessor.h"
 #include "WaveformDisplay.h"
 #include "SubdivisionProbabilityGrid.h"
+#include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-18 editor: load button, reset-edits safety net, undo/redo, status
+/** Step-19 editor: load button, reset-edits safety net, undo/redo, status
     label, loop-length/sensitivity controls (with a live preview while
     dragging sensitivity), fade controls, pitch mode (Repitch vs
     Time-Stretch, with its grain size/window shape/pitch shift controls),
-    trigger mode (Slice Length vs Clock, with its clock-reference menu and
-    subdivision probability grid), and the waveform display — which owns
-    slice visualization, drag-and-drop loading, per-slice probability,
-    manual slice add/move/remove, deleting auto-detected transients, a
-    live playhead highlight, and modifier-key hover cues. */
+    playback style (Forward vs Ping-Pong, rolled once per pick regardless
+    of trigger mode), trigger mode (Slice Length vs Clock, with its
+    clock-reference menu and subdivision probability grid), and the
+    waveform display — which owns slice visualization, drag-and-drop
+    loading, per-slice probability, manual slice add/move/remove,
+    deleting auto-detected transients, a live playhead highlight, and
+    modifier-key hover cues. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -70,6 +73,12 @@ private:
 
     juce::Label triggerModeLabel;
     juce::ComboBox triggerModeSelector; // "Slice Length" / "Clock"
+
+    // Playback style (Step 19) — visible in BOTH trigger modes, unlike
+    // the Clock-only controls below: it's rolled once per pick in Slice
+    // Length mode too, not just once per Clock window.
+    juce::Label playbackStyleLabel;
+    PlaybackStyleGrid playbackStyleGrid;
 
     // Clock-mode-only controls — laid out in reserved space, hidden
     // (setVisible(false)) rather than the window resizing dynamically,

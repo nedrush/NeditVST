@@ -307,6 +307,39 @@ public:
             subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
+    //=== Playback style (Step 19) ===
+    // A second weighted table, independent of (but rolled at the same
+    // time as) the slice/subdivision picks above: Forward is today's
+    // behaviour; Ping-Pong plays a slice forward then immediately
+    // backward before the next pick, via the shared foldPosition()
+    // mapping in GranularStretcher (used by both pitch modes' render
+    // paths, so it behaves identically in Repitch and Time-Stretch).
+    // Defaults to Forward-only (weight 0 on Ping-Pong) rather than even
+    // odds like the other tables — that's what guarantees the default
+    // sounds byte-identical to before this existed, not just "usually."
+    enum class PlaybackStyle { forward, pingPong };
+
+    static constexpr int numPlaybackStyleOptions = 2;
+    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong"
+
+    float getPlaybackStyleProbability (int index) const
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        if (index < 0 || index >= (int) playbackStyleProbabilities.size())
+            return 1.0f;
+
+        return playbackStyleProbabilities[(size_t) index];
+    }
+
+    void setPlaybackStyleProbability (int index, float probability)
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        if (index >= 0 && index < (int) playbackStyleProbabilities.size())
+            playbackStyleProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
+    }
+
     //=== Pitch mode (Step 17) ===
     // Independent of Trigger Mode — only changes HOW a pick's audio gets
     // rendered, never when slices get picked/retriggered or how they're
@@ -442,6 +475,7 @@ private:
     std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
     std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
+    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0} (Forward-only)
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision
@@ -452,15 +486,36 @@ private:
     double windowEndPpq = 0.0;
     int clockCurrentSliceIndex = -1;
     int clockCurrentSubdivisionIndex = -1;
+    PlaybackStyle clockCurrentPlaybackStyle = PlaybackStyle::forward; // drawn once per window, alongside the two above
 
     // Self-chaining playback state — which slice is currently sounding,
     // where we are within it (source sample units), and where it ends.
     // When position reaches the end, the very next sample immediately
     // picks a new slice and continues with zero gap.
+    //
+    // currentPosition/currentEndSample are the "unfolded" scheduling
+    // position — for Ping-Pong, currentEndSample is pushed out to a full
+    // round trip (2x slice length) and currentPosition just keeps
+    // counting up through it, same as it always has for Forward.
+    // currentSliceStartSample/currentSliceLength are the TRUE slice
+    // bounds regardless of style, kept separately since currentEndSample
+    // no longer is one for Ping-Pong — these feed GranularStretcher::
+    // foldPosition() to compute the actual (bounced, for Ping-Pong) read
+    // position each render step.
     bool hasCurrentPick = false;
     int currentSliceIndex = -1;
     double currentPosition = 0.0;
     int currentEndSample = 0;
+    int currentSliceStartSample = 0;
+    int currentSliceLength = 0;
+    PlaybackStyle currentPlaybackStyle = PlaybackStyle::forward;
+
+    // Where (in host-output samples since this pick started) a Ping-Pong
+    // round trip reverses direction — always one slice's worth of natural
+    // (un-doubled) playback time, regardless of how currentPickLength-
+    // InHostSamples itself might get shortened by a Clock-mode tick.
+    // Meaningless/unused for Forward.
+    double currentPickMidpointHostSamples = 0.0;
 
     // Lock-free copy of currentSliceIndex, written by the audio thread
     // whenever a new pick begins, read by the UI thread for the playhead
