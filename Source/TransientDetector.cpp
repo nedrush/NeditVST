@@ -103,28 +103,40 @@ void TransientDetector::analyze (const juce::AudioBuffer<float>& buffer, double 
                      : 0.0f;
 }
 
-std::vector<Slice> TransientDetector::detectSlices (float sensitivity, float holdoffMs) const
+std::vector<Slice> TransientDetector::detectSlices (float sensitivity, float holdoffMs,
+                                                      int rangeStartSample, int rangeEndSample) const
 {
     std::vector<Slice> slices;
 
     if (! hasAnalysis() || numSamples == 0)
         return slices;
 
+    // -1 sentinel (the default) means "the whole analysed buffer" — matches
+    // every pre-trim caller's behaviour exactly.
+    if (rangeStartSample < 0) rangeStartSample = 0;
+    if (rangeEndSample < 0) rangeEndSample = numSamples;
+
+    rangeStartSample = juce::jlimit (0, numSamples, rangeStartSample);
+    rangeEndSample = juce::jlimit (rangeStartSample, numSamples, rangeEndSample);
+
     sensitivity = juce::jlimit (0.0f, 1.0f, sensitivity);
 
     std::vector<int> onsets;
 
     // sensitivity == 0 is guaranteed zero transients, same contract as the
-    // JS version — skip straight to "whole buffer is one slice" below.
+    // JS version — skip straight to "whole range is one slice" below.
     if (sensitivity > 0.0f)
     {
         const float threshold = globalMaxDerivative
                                  - sensitivity * (globalMaxDerivative - noiseFloor);
 
         const int holdoffSamples = (int) ((holdoffMs / 1000.0f) * (float) analyzedSampleRate);
-        int lastOnset = -holdoffSamples; // allow an onset right at the start
+        int lastOnset = rangeStartSample - holdoffSamples; // allow an onset right at the range start
 
-        for (int i = 1; i < numSamples; ++i)
+        // Starts at max(1, rangeStartSample) since the derivative comparison
+        // below needs a valid i-1; matches the pre-trim loop exactly when
+        // rangeStartSample is 0.
+        for (int i = juce::jmax (1, rangeStartSample); i < rangeEndSample; ++i)
         {
             if (derivative[(size_t) i] > threshold
                 && derivative[(size_t) i] >= derivative[(size_t) (i - 1)]
@@ -136,15 +148,16 @@ std::vector<Slice> TransientDetector::detectSlices (float sensitivity, float hol
         }
     }
 
-    // Make sure nothing before the first detected onset gets orphaned.
-    if (onsets.empty() || onsets.front() > 0)
-        onsets.insert (onsets.begin(), 0);
+    // Make sure nothing before the first detected onset gets orphaned —
+    // the range start plays the role position 0 used to play pre-trim.
+    if (onsets.empty() || onsets.front() > rangeStartSample)
+        onsets.insert (onsets.begin(), rangeStartSample);
 
     for (size_t i = 0; i < onsets.size(); ++i)
     {
         Slice slice;
         slice.startSample = onsets[i];
-        slice.endSample = (i + 1 < onsets.size()) ? onsets[i + 1] : numSamples;
+        slice.endSample = (i + 1 < onsets.size()) ? onsets[i + 1] : rangeEndSample;
 
         if (slice.lengthInSamples() > 0)
             slices.push_back (slice);
@@ -153,15 +166,26 @@ std::vector<Slice> TransientDetector::detectSlices (float sensitivity, float hol
     return slices;
 }
 
-int TransientDetector::findNearestPeak (int targetSample, int searchRadiusSamples) const
+int TransientDetector::findNearestPeak (int targetSample, int searchRadiusSamples,
+                                         int rangeStartSample, int rangeEndSample) const
 {
     if (! hasAnalysis() || numSamples == 0)
         return targetSample;
 
-    const int lo = juce::jlimit (0, numSamples - 1, targetSample - searchRadiusSamples);
-    const int hi = juce::jlimit (0, numSamples - 1, targetSample + searchRadiusSamples);
+    if (rangeStartSample < 0) rangeStartSample = 0;
+    if (rangeEndSample < 0) rangeEndSample = numSamples;
 
-    int bestIndex = juce::jlimit (0, numSamples - 1, targetSample);
+    rangeStartSample = juce::jlimit (0, numSamples, rangeStartSample);
+    rangeEndSample = juce::jlimit (rangeStartSample, numSamples, rangeEndSample);
+
+    if (rangeEndSample <= rangeStartSample)
+        return juce::jlimit (0, numSamples - 1, targetSample); // degenerate range — nothing to search
+
+    const int rangeLastIndex = rangeEndSample - 1;
+    const int lo = juce::jlimit (rangeStartSample, rangeLastIndex, targetSample - searchRadiusSamples);
+    const int hi = juce::jlimit (rangeStartSample, rangeLastIndex, targetSample + searchRadiusSamples);
+
+    int bestIndex = juce::jlimit (rangeStartSample, rangeLastIndex, targetSample);
     float bestValue = -1.0f;
 
     for (int i = lo; i <= hi; ++i)

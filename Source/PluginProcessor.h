@@ -78,6 +78,38 @@ public:
 
     float getSensitivity() const { return currentSensitivity.load(); }
 
+    //=== Trim markers (Step 23) ===
+    // Two independent boundaries, in source-sample units, confining
+    // EVERYTHING else in this class to [trimStart, trimEnd): transient
+    // detection, manual slice point add/move (including the snap-to-
+    // transient search), and therefore what can ever become a slice or get
+    // played. Default to the full sample length on load (start=0,
+    // end=buffer length), so behaviour is unchanged until the user actually
+    // drags a handle. Continuous parameters like sensitivity/loop length —
+    // deliberately NOT undo-tracked (see the Undo/redo section below) —
+    // dragging a handle just re-triggers the same rebuild pathway sensitivity
+    // changes already use, which naturally drops any existing slice boundary
+    // (manual or auto) that now falls outside the new range.
+    int getTrimStartSample() const { return trimStartSample.load(); }
+    int getTrimEndSample() const { return trimEndSample.load(); }
+
+    void setTrimStartSample (int sample)
+    {
+        const int currentEnd = trimEndSample.load();
+        const int upperBound = juce::jmax (0, currentEnd - minTrimGapSamples); // guards tiny/degenerate buffers
+        trimStartSample.store (juce::jlimit (0, upperBound, sample));
+        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), defaultHoldoffMs);
+    }
+
+    void setTrimEndSample (int sample)
+    {
+        const int currentStart = trimStartSample.load();
+        const int bufferLength = sampleBuffer.getNumSamples();
+        const int lowerBound = juce::jmin (currentStart + minTrimGapSamples, bufferLength); // guards tiny/degenerate buffers
+        trimEndSample.store (juce::jlimit (lowerBound, bufferLength, sample));
+        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), defaultHoldoffMs);
+    }
+
     // Live preview (Step 12): shows what detection WOULD produce at a
     // given sensitivity — merged with the current manual/excluded points,
     // same as a real commit — but without touching playback state at all
@@ -196,14 +228,38 @@ public:
     void setLoopLengthBars (int bars) { loopLengthBars.store (juce::jmax (1, bars)); }
     int getLoopLengthBars() const { return loopLengthBars.load(); }
 
-    // Calculated from loopLengthBars + the sample's actual length. Exposed
-    // mainly so the editor can display it — "this loop is ~140 BPM".
+    //=== Manual BPM override (Step 23) ===
+    // When enabled, REPLACES the bars-derived tempo calculation entirely
+    // (not layered alongside it) — see computeSourceSpanSeconds(), the one
+    // shared function both this and the Trim markers above feed into, used
+    // consistently by processBlock()'s direct-read path and by whatever
+    // GranularStretcher renders (via the same repitchRatio it already
+    // flows through).
+    void setManualBpmOverrideEnabled (bool enabled) { manualBpmOverrideEnabled.store (enabled); }
+    bool getManualBpmOverrideEnabled() const { return manualBpmOverrideEnabled.load(); }
+
+    void setManualBpmOverrideValue (double bpm) { manualBpmOverrideValue.store (juce::jmax (1.0, bpm)); }
+    double getManualBpmOverrideValue() const { return manualBpmOverrideValue.load(); }
+
+    // Calculated from loopLengthBars + (the trimmed span of the sample, or
+    // the manual BPM override when enabled). Exposed mainly so the editor
+    // can display it — "this loop is ~140 BPM". Shows the override value
+    // directly when it's active, rather than a value re-derived from it
+    // (those are mathematically the same number for the *source* span, but
+    // showing the raw override avoids any rounding-trip confusion).
     double getCalculatedOriginalBpm() const
     {
+        if (manualBpmOverrideEnabled.load())
+            return manualBpmOverrideValue.load();
+
         if (! sampleLoaded || sampleBuffer.getNumSamples() == 0)
             return 0.0;
 
-        const double lengthSeconds = (double) sampleBuffer.getNumSamples() / sampleSampleRate;
+        const double lengthSeconds = computeSourceSpanSeconds();
+
+        if (lengthSeconds <= 0.0)
+            return 0.0;
+
         const double beats = (double) loopLengthBars.load() * 4.0; // assumes 4/4
         return (beats * 60.0) / lengthSeconds;
     }
@@ -471,9 +527,28 @@ private:
 
     // Pure merge logic (no side effects, no member writes) shared by the
     // real rebuild above and previewSlicesAtSensitivity(). Takes a raw
-    // auto-detection result and folds in exclusions + manual points.
-    // Must be called with sampleLock already held.
-    std::vector<Slice> mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices) const;
+    // auto-detection result (already confined to [trimStart, trimEnd) by
+    // the caller) and folds in exclusions + manual points, filtering out
+    // any manual point that now falls outside the trim range rather than
+    // deleting it outright — same "soft exclude" treatment already used
+    // for auto-detected exclusions, so widening the trim again later can
+    // bring it back. Must be called with sampleLock already held.
+    std::vector<Slice> mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices, int trimStart, int trimEnd) const;
+
+    // Unifies the tempo math (Step 23) that both Trim markers and Manual
+    // BPM override feed into:
+    //   sourceSpanSeconds = manualBpmOverrideEnabled
+    //       ? (loopLengthBars * 4 * 60) / manualBpmOverrideValue
+    //       : (trimEndSample - trimStartSample) / sampleSampleRate
+    // Used by both getCalculatedOriginalBpm() (the UI's "~X BPM" label) and
+    // processBlock()'s repitchRatio — replaces the old calculation, which
+    // used the whole buffer's length regardless of trim (the bug this
+    // fixes). The existing repitchRatio formula itself (sourceSpanSeconds /
+    // hostLoopLengthSeconds) is otherwise unchanged, and GranularStretcher
+    // never computes tempo itself — it only ever receives the ratios
+    // (repitchRatio, srConversionRatio) this feeds into, so it stays
+    // consistent with the direct-read path "for free."
+    double computeSourceSpanSeconds() const;
 
     struct ManualSlicePoint
     {
@@ -514,6 +589,22 @@ private:
     juce::Random random;
 
     std::atomic<int> loopLengthBars { 1 };
+
+    // Trim markers (Step 23) — source-sample-domain bounds confining
+    // detection/manual points/playback. Set to the full buffer on load in
+    // loadSample(). minTrimGapSamples keeps the two handles from ever
+    // crossing/colliding, so the range can never degenerate to zero width.
+    std::atomic<int> trimStartSample { 0 };
+    std::atomic<int> trimEndSample { 0 };
+    static constexpr int minTrimGapSamples = 64;
+
+    // Manual BPM override (Step 23) — off by default, so behaviour is
+    // unchanged (bars-derived tempo, same as always) until the user
+    // explicitly enables it. 120 is just a sane inert starting value; it
+    // has zero effect while disabled.
+    std::atomic<bool> manualBpmOverrideEnabled { false };
+    std::atomic<double> manualBpmOverrideValue { 120.0 };
+
     std::atomic<float> currentSensitivity { defaultSensitivity };
     std::atomic<float> fadeInMs { 5.0f };
     std::atomic<float> fadeOutMs { 15.0f };

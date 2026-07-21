@@ -46,8 +46,17 @@ public:
         sensitivity slider in the UI) without re-analysing the audio.
 
         sensitivity: 0.0 (nothing detected) .. 1.0 (maximally permissive)
-        holdoffMs:   minimum gap between consecutive onsets */
-    std::vector<Slice> detectSlices (float sensitivity, float holdoffMs) const;
+        holdoffMs:   minimum gap between consecutive onsets
+        rangeStartSample/rangeEndSample (Step 23 — trim markers): confines
+        both the onset search AND the returned slices to
+        [rangeStartSample, rangeEndSample) — nothing outside a trimmed
+        range is ever detected or becomes a slice. rangeStartSample takes
+        the role position 0 used to play (the one always-present, never-
+        excludable boundary); the last slice's endSample is rangeEndSample
+        rather than the buffer's true length. Defaults (-1, -1) mean "the
+        whole analysed buffer," matching pre-trim behaviour exactly. */
+    std::vector<Slice> detectSlices (float sensitivity, float holdoffMs,
+                                      int rangeStartSample = -1, int rangeEndSample = -1) const;
 
     bool hasAnalysis() const { return ! derivative.empty(); }
     int getAnalyzedLengthInSamples() const { return numSamples; }
@@ -59,8 +68,15 @@ public:
         what "the transient that would have been detected at higher
         sensitivity" means: the data was there in the derivative all along,
         sensitivity just decides where the cutoff line sits. Returns
-        targetSample unchanged if there's no analysis to search. */
-    int findNearestPeak (int targetSample, int searchRadiusSamples) const;
+        targetSample unchanged if there's no analysis to search.
+
+        rangeStartSample/rangeEndSample (Step 23 — trim markers): the
+        search (and its result) is additionally clamped to
+        [rangeStartSample, rangeEndSample) — a manual point can never snap
+        to a peak outside the trimmed range. Defaults (-1, -1) mean "the
+        whole analysed buffer." */
+    int findNearestPeak (int targetSample, int searchRadiusSamples,
+                          int rangeStartSample = -1, int rangeEndSample = -1) const;
 
 private:
     std::vector<float> envelope;

@@ -7,10 +7,12 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-22 editor: load button, reset-edits safety net, undo/redo, status
+/** Step-23 editor: load button, reset-edits safety net, undo/redo, status
     label, loop-length/sensitivity controls (with a live preview while
-    dragging sensitivity), fade controls, pitch mode (Repitch vs
-    Time-Stretch, with its grain size/window shape/pitch shift controls),
+    dragging sensitivity), a manual BPM override toggle + field that
+    replaces the bars-derived tempo calculation entirely when enabled,
+    fade controls, pitch mode (Repitch vs Time-Stretch, with its grain
+    size/window shape/pitch shift controls),
     playback style (Forward / Ping-Pong / Tape Stop / Stretch, rolled once
     per pick regardless of trigger mode — Stretch always renders through
     the granular engine regardless of pitch mode, with its own hardcoded
@@ -42,6 +44,7 @@ private:
     void updateAfterSampleOrSliceChange(); // refreshes status text, BPM display, and the waveform
     void updateTriggerModeVisibility(); // shows/hides the Clock-only controls
     void updatePitchModeVisibility(); // shows/hides the Time-Stretch-only controls
+    void updateManualBpmOverrideVisibility(); // shows/hides the BPM numeric field
     int layoutControlsContent (int contentWidth); // lays out every control below; returns the total height they need
 
     SlicerAudioProcessor& processor;
@@ -66,6 +69,14 @@ private:
     juce::Label loopLengthLabel;
     juce::Slider loopLengthSlider; // integer bars, e.g. 1-8
     juce::Label calculatedBpmLabel;
+
+    // Manual BPM override (Step 23) — replaces the bars-derived tempo
+    // calculation entirely when enabled, rather than working alongside it.
+    // The numeric field is only shown/enabled while the toggle is on, same
+    // show/hide pattern as the Time-Stretch-only and Clock-only controls.
+    juce::ToggleButton manualBpmOverrideToggle { "Manual BPM override" };
+    juce::Label manualBpmOverrideLabel;
+    juce::Slider manualBpmOverrideSlider;
 
     juce::Label pitchModeLabel;
     juce::ComboBox pitchModeSelector; // "Repitch" / "Time-Stretch"

@@ -50,6 +50,30 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     controlsContent.addAndMakeVisible (calculatedBpmLabel);
     calculatedBpmLabel.setJustificationType (juce::Justification::centredLeft);
 
+    controlsContent.addAndMakeVisible (manualBpmOverrideToggle);
+    manualBpmOverrideToggle.setToggleState (processor.getManualBpmOverrideEnabled(), juce::dontSendNotification);
+    manualBpmOverrideToggle.onClick = [this]
+    {
+        processor.setManualBpmOverrideEnabled (manualBpmOverrideToggle.getToggleState());
+        updateManualBpmOverrideVisibility();
+        updateAfterSampleOrSliceChange(); // refreshes the "~X BPM" label immediately
+    };
+
+    controlsContent.addAndMakeVisible (manualBpmOverrideLabel);
+    manualBpmOverrideLabel.setText ("BPM", juce::dontSendNotification);
+    manualBpmOverrideLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (manualBpmOverrideSlider);
+    manualBpmOverrideSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    manualBpmOverrideSlider.setRange (20.0, 300.0, 0.1);
+    manualBpmOverrideSlider.setValue (processor.getManualBpmOverrideValue(), juce::dontSendNotification);
+    manualBpmOverrideSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
+    manualBpmOverrideSlider.onValueChange = [this]
+    {
+        processor.setManualBpmOverrideValue (manualBpmOverrideSlider.getValue());
+        updateAfterSampleOrSliceChange(); // refreshes the "~X BPM" label live while dragging
+    };
+
     controlsContent.addAndMakeVisible (pitchModeLabel);
     pitchModeLabel.setText ("Pitch mode", juce::dontSendNotification);
     pitchModeLabel.setJustificationType (juce::Justification::centredLeft);
@@ -235,9 +259,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     updateTriggerModeVisibility();
     updatePitchModeVisibility();
+    updateManualBpmOverrideVisibility();
 
     addAndMakeVisible (waveformDisplay);
     waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
+    waveformDisplay.onTrimChanged = [this] { updateAfterSampleOrSliceChange(); };
 
     // Fixed window size regardless of how much lives inside controlsContent
     // (it scrolls internally within controlsViewport's fixed height) —
@@ -260,7 +286,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 22: Stretch playback style",
+    g.drawFittedText ("NeditVST — step 23: Trim markers + manual BPM override",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -308,6 +334,15 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     loopLengthSlider.setBounds (loopRow.removeFromLeft (100));
     loopRow.removeFromLeft (10);
     calculatedBpmLabel.setBounds (loopRow);
+    area.removeFromTop (10);
+
+    auto manualBpmToggleRow = area.removeFromTop (24);
+    manualBpmOverrideToggle.setBounds (manualBpmToggleRow);
+    area.removeFromTop (6);
+
+    auto manualBpmValueRow = area.removeFromTop (30);
+    manualBpmOverrideLabel.setBounds (manualBpmValueRow.removeFromLeft (140));
+    manualBpmOverrideSlider.setBounds (manualBpmValueRow);
     area.removeFromTop (20);
 
     auto pitchModeRow = area.removeFromTop (30);
@@ -436,6 +471,14 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     tapeStopScopeSelector.setVisible (clock);
     subdivisionTableLabel.setVisible (clock);
     subdivisionGrid.setVisible (clock);
+}
+
+void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()
+{
+    const bool enabled = manualBpmOverrideToggle.getToggleState();
+
+    manualBpmOverrideLabel.setVisible (enabled);
+    manualBpmOverrideSlider.setVisible (enabled);
 }
 
 void SlicerAudioProcessorEditor::updatePitchModeVisibility()

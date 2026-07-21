@@ -99,6 +99,38 @@ void WaveformDisplay::paint (juce::Graphics& g)
         g.drawVerticalLine (x, y1, y2);
     }
 
+    // --- Trim markers (Step 23): dim everything outside [trimStart, trimEnd)
+    // and draw two draggable flagged handles, distinct in colour/shape
+    // from slice/manual/auto boundary lines so they're never confused. ---
+    {
+        const int totalSamplesForTrim = processor.getSampleBuffer().getNumSamples();
+
+        if (totalSamplesForTrim > 0)
+        {
+            const float trimStartX = ((float) processor.getTrimStartSample() / (float) totalSamplesForTrim) * bounds.getWidth();
+            const float trimEndX = ((float) processor.getTrimEndSample() / (float) totalSamplesForTrim) * bounds.getWidth();
+
+            g.setColour (juce::Colours::black.withAlpha (0.6f));
+
+            if (trimStartX > bounds.getX())
+                g.fillRect (bounds.getX(), bounds.getY(), trimStartX - bounds.getX(), bounds.getHeight());
+
+            if (trimEndX < bounds.getRight())
+                g.fillRect (trimEndX, bounds.getY(), bounds.getRight() - trimEndX, bounds.getHeight());
+
+            g.setColour (juce::Colours::yellow.withAlpha (0.9f));
+            g.drawVerticalLine ((int) trimStartX, bounds.getY(), bounds.getBottom());
+            g.drawVerticalLine ((int) trimEndX, bounds.getY(), bounds.getBottom());
+
+            constexpr float flagSize = 9.0f;
+            juce::Path startFlag, endFlag;
+            startFlag.addTriangle (trimStartX, bounds.getY(), trimStartX + flagSize, bounds.getY(), trimStartX, bounds.getY() + flagSize);
+            endFlag.addTriangle (trimEndX, bounds.getY(), trimEndX - flagSize, bounds.getY(), trimEndX, bounds.getY() + flagSize);
+            g.fillPath (startFlag);
+            g.fillPath (endFlag);
+        }
+    }
+
     // --- Slice boundaries + probability faders ---
     // While a live preview is active (e.g. dragging the sensitivity
     // slider), draw the proposed layout instead of the committed one.
@@ -318,6 +350,31 @@ int WaveformDisplay::findAutoPointNear (int x) const
     return -1;
 }
 
+WaveformDisplay::TrimHandle WaveformDisplay::findTrimHandleNear (int x) const
+{
+    if (! processor.hasSample())
+        return TrimHandle::none;
+
+    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+
+    if (totalSamples <= 0)
+        return TrimHandle::none;
+
+    const float width = (float) juce::jmax (1, getWidth());
+    constexpr float hitRadiusPixels = 8.0f;
+
+    const float startX = ((float) processor.getTrimStartSample() / (float) totalSamples) * width;
+    const float endX = ((float) processor.getTrimEndSample() / (float) totalSamples) * width;
+
+    if (std::abs (startX - (float) x) <= hitRadiusPixels)
+        return TrimHandle::start;
+
+    if (std::abs (endX - (float) x) <= hitRadiusPixels)
+        return TrimHandle::end;
+
+    return TrimHandle::none;
+}
+
 void WaveformDisplay::setProbabilityFromMouse (const juce::MouseEvent& event)
 {
     const int sliceIndex = getSliceIndexAtX (event.x);
@@ -334,9 +391,18 @@ void WaveformDisplay::mouseDown (const juce::MouseEvent& event)
 {
     draggingManualPointId = -1;
     dragStartSamplePosition = -1;
+    draggingTrimHandle = TrimHandle::none;
 
     if (! processor.hasSample())
         return;
+
+    const auto trimHandle = findTrimHandleNear (event.x);
+
+    if (trimHandle != TrimHandle::none)
+    {
+        draggingTrimHandle = trimHandle;
+        return;
+    }
 
     const int nearManualId = findManualPointNear (event.x);
 
@@ -380,6 +446,28 @@ void WaveformDisplay::mouseDown (const juce::MouseEvent& event)
 
 void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
 {
+    if (draggingTrimHandle == TrimHandle::start)
+    {
+        processor.setTrimStartSample (xToSample (event.x));
+        refresh();
+
+        if (onTrimChanged)
+            onTrimChanged();
+
+        return;
+    }
+
+    if (draggingTrimHandle == TrimHandle::end)
+    {
+        processor.setTrimEndSample (xToSample (event.x));
+        refresh();
+
+        if (onTrimChanged)
+            onTrimChanged();
+
+        return;
+    }
+
     if (draggingManualPointId >= 0)
     {
         const bool snap = ! event.mods.isShiftDown();
@@ -398,6 +486,7 @@ void WaveformDisplay::mouseUp (const juce::MouseEvent&)
 
     draggingManualPointId = -1;
     dragStartSamplePosition = -1;
+    draggingTrimHandle = TrimHandle::none;
 }
 
 bool WaveformDisplay::isSupportedAudioFile (const juce::File& file)

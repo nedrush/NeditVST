@@ -6,8 +6,10 @@
 //==============================================================================
 /** Draws the loaded sample's waveform, a vertical line at each slice
     boundary (bright magenta = manually placed, white = auto-detected),
-    one draggable probability "fader" per slice, and a live highlight over
-    whichever slice is currently sounding.
+    one draggable probability "fader" per slice, a live highlight over
+    whichever slice is currently sounding, and two draggable Trim Start /
+    Trim End handles (Step 23) — distinct yellow flagged lines, with
+    everything outside them dimmed to make the excluded region obvious.
 
     Interactions:
       - Drag within a slice's body (away from any boundary line) sets that
@@ -21,6 +23,10 @@
       - Double-click or Cmd-click an auto-detected point (white line)
         deletes it — it won't come back until sensitivity or Reset changes
         that. Position 0 can't be deleted.
+      - Click-drag a Trim Start/End handle (yellow flag) moves it — nothing
+        outside the trimmed range can ever be detected, manually placed, or
+        played; dragging a handle inward past an existing slice boundary
+        drops that boundary from the active slice list on the next rebuild.
 
     Also accepts drag-and-drop of audio files straight onto it. */
 class WaveformDisplay : public juce::Component,
@@ -61,6 +67,12 @@ public:
     // updates (status text, BPM display).
     std::function<void()> onSampleChanged;
 
+    // Set by the editor — called on every trim handle drag (Step 23), so
+    // the "~X BPM" label (computeSourceSpanSeconds() depends on the trim
+    // range) and slice-count status text stay live while dragging, rather
+    // than only updating on the next unrelated editor action.
+    std::function<void()> onTrimChanged;
+
 private:
     void timerCallback() override; // drives the live playhead highlight + Cmd-hover cue
 
@@ -72,6 +84,10 @@ private:
     void setProbabilityFromMouse (const juce::MouseEvent& event);
     static bool isSupportedAudioFile (const juce::File& file);
 
+    // Trim markers (Step 23).
+    enum class TrimHandle { none, start, end };
+    TrimHandle findTrimHandleNear (int x) const;
+
     SlicerAudioProcessor& processor;
 
     // One {min, max} pair per horizontal pixel column, built at the
@@ -82,6 +98,12 @@ private:
     bool isDraggingOver = false;      // true while a file is hovering during drag-and-drop
     int draggingManualPointId = -1;   // -1 = not currently dragging a manual point
     int dragStartSamplePosition = -1; // where a manual point was before the current drag, for undo
+
+    // Trim markers (Step 23) — which handle (if any) the current drag is
+    // moving. Continuous parameter, not undo-tracked (same bucket as
+    // sensitivity/loop length), so unlike draggingManualPointId there's no
+    // start-position bookkeeping needed here.
+    TrimHandle draggingTrimHandle = TrimHandle::none;
 
     std::vector<Slice> previewSlices;
     bool hasPreview = false;

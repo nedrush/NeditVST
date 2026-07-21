@@ -195,10 +195,10 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // modes — it's purely a playback-speed/pitch thing, independent of
     // when triggers happen.
     const double loopLengthQuarterNotes = (double) loopLengthBars.load() * 4.0; // assumes 4/4
-    const double sourceLoopLengthSeconds = (double) sampleBuffer.getNumSamples() / sampleSampleRate;
+    const double sourceSpanSeconds = computeSourceSpanSeconds();
     const double hostLoopLengthSeconds = loopLengthQuarterNotes * (60.0 / hostBpm);
     const double repitchRatio = (hostLoopLengthSeconds > 0.0)
-                                     ? (sourceLoopLengthSeconds / hostLoopLengthSeconds)
+                                     ? (sourceSpanSeconds / hostLoopLengthSeconds)
                                      : 1.0;
     const double playbackRate = (sampleSampleRate / hostSampleRate) * repitchRatio;
 
@@ -688,6 +688,11 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
 
         transientDetector.analyze (sampleBuffer, sampleSampleRate);
 
+        // Trim markers (Step 23): default to the full sample length, so
+        // behaviour is unchanged until the user actually drags a handle.
+        trimStartSample.store (0);
+        trimEndSample.store (sampleBuffer.getNumSamples());
+
         manualPoints.clear(); // positions from the old sample don't mean anything here
         excludedPoints.clear();
         hasCurrentPick = false; // don't let a stale pick read past the new buffer's end
@@ -705,13 +710,34 @@ void SlicerAudioProcessor::redetectSlices (float sensitivity, float holdoffMs)
     rebuildSlicesFromDetectionAndManualPoints (sensitivity, holdoffMs);
 }
 
+double SlicerAudioProcessor::computeSourceSpanSeconds() const
+{
+    if (manualBpmOverrideEnabled.load())
+    {
+        const double bpm = manualBpmOverrideValue.load();
+
+        if (bpm <= 0.0)
+            return 0.0;
+
+        const double beats = (double) loopLengthBars.load() * 4.0; // assumes 4/4, same as elsewhere
+        return (beats * 60.0) / bpm;
+    }
+
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+    const int spanSamples = juce::jmax (0, trimEnd - trimStart);
+    return (double) spanSamples / sampleSampleRate;
+}
+
 void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sensitivity, float holdoffMs)
 {
-    auto autoSlices = transientDetector.detectSlices (sensitivity, holdoffMs);
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+    auto autoSlices = transientDetector.detectSlices (sensitivity, holdoffMs, trimStart, trimEnd);
 
     const juce::ScopedLock sl (sampleLock);
 
-    slices = mergeOnsetsIntoSlices (autoSlices);
+    slices = mergeOnsetsIntoSlices (autoSlices, trimStart, trimEnd);
     sliceProbabilities.assign (slices.size(), 1.0f); // default: even odds across all slices
     hasCurrentPick = false; // boundaries changed — force a fresh pick
     clockModeInitialized = false;
@@ -720,15 +746,16 @@ void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sens
 
 std::vector<Slice> SlicerAudioProcessor::previewSlicesAtSensitivity (float sensitivity) const
 {
-    auto autoSlices = transientDetector.detectSlices (sensitivity, defaultHoldoffMs);
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+    auto autoSlices = transientDetector.detectSlices (sensitivity, defaultHoldoffMs, trimStart, trimEnd);
 
     const juce::ScopedLock sl (sampleLock);
-    return mergeOnsetsIntoSlices (autoSlices);
+    return mergeOnsetsIntoSlices (autoSlices, trimStart, trimEnd);
 }
 
-std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices) const
+std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices, int trimStart, int trimEnd) const
 {
-    const int totalSamples = sampleBuffer.getNumSamples();
     const int matchToleranceSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
 
     std::vector<int> onsets;
@@ -736,9 +763,9 @@ std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vecto
 
     for (const auto& s : autoSlices)
     {
-        if (s.startSample == 0)
+        if (s.startSample == trimStart)
         {
-            onsets.push_back (0); // the very start is never excludable
+            onsets.push_back (trimStart); // the trim start is never excludable
             continue;
         }
 
@@ -757,12 +784,16 @@ std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vecto
             onsets.push_back (s.startSample);
     }
 
+    // Manual points outside the current trim range are filtered out here
+    // (not deleted from manualPoints itself) — the same "soft exclude"
+    // widening the trim back out later can undo, matching excludedPoints'
+    // own semantics just above.
     for (const auto& mp : manualPoints)
-        if (mp.samplePosition > 0 && mp.samplePosition < totalSamples)
+        if (mp.samplePosition > trimStart && mp.samplePosition < trimEnd)
             onsets.push_back (mp.samplePosition);
 
-    if (onsets.empty() || onsets.front() != 0)
-        onsets.insert (onsets.begin(), 0);
+    if (onsets.empty() || onsets.front() != trimStart)
+        onsets.insert (onsets.begin(), trimStart);
 
     std::sort (onsets.begin(), onsets.end());
     onsets.erase (std::unique (onsets.begin(), onsets.end()), onsets.end());
@@ -773,7 +804,7 @@ std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vecto
     {
         Slice slice;
         slice.startSample = onsets[i];
-        slice.endSample = (i + 1 < onsets.size()) ? onsets[i + 1] : totalSamples;
+        slice.endSample = (i + 1 < onsets.size()) ? onsets[i + 1] : trimEnd;
 
         if (slice.lengthInSamples() > 0)
             result.push_back (slice);
@@ -784,12 +815,14 @@ std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vecto
 
 int SlicerAudioProcessor::addManualSlicePoint (int targetSample, bool snapToTransient)
 {
-    int snapped = targetSample;
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+    int snapped = juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), targetSample);
 
     if (snapToTransient)
     {
         const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
-        snapped = transientDetector.findNearestPeak (targetSample, radiusSamples);
+        snapped = transientDetector.findNearestPeak (snapped, radiusSamples, trimStart, trimEnd);
     }
 
     const int id = nextManualPointId++;
@@ -807,12 +840,14 @@ int SlicerAudioProcessor::addManualSlicePoint (int targetSample, bool snapToTran
 
 void SlicerAudioProcessor::moveManualSlicePoint (int id, int targetSample, bool snapToTransient)
 {
-    int snapped = targetSample;
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+    int snapped = juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), targetSample);
 
     if (snapToTransient)
     {
         const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
-        snapped = transientDetector.findNearestPeak (targetSample, radiusSamples);
+        snapped = transientDetector.findNearestPeak (snapped, radiusSamples, trimStart, trimEnd);
     }
 
     {
@@ -865,17 +900,20 @@ void SlicerAudioProcessor::removeManualSlicePoint (int id)
 
 int SlicerAudioProcessor::excludeNearestAutoPoint (int targetSample)
 {
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+
     // Search the raw current auto-detection result (not the merged
-    // `slices`) for the nearest boundary to targetSample — position 0 is
-    // never a candidate, it can't be excluded.
-    auto autoSlices = transientDetector.detectSlices (currentSensitivity.load(), defaultHoldoffMs);
+    // `slices`) for the nearest boundary to targetSample — the trim start
+    // is never a candidate, it can't be excluded.
+    auto autoSlices = transientDetector.detectSlices (currentSensitivity.load(), defaultHoldoffMs, trimStart, trimEnd);
 
     int nearest = -1;
     int bestDistance = std::numeric_limits<int>::max();
 
     for (const auto& s : autoSlices)
     {
-        if (s.startSample == 0)
+        if (s.startSample == trimStart)
             continue;
 
         const int distance = std::abs (s.startSample - targetSample);
