@@ -63,6 +63,8 @@ target_sources(NeditVST
         Source/SubdivisionProbabilityGrid.h
         Source/GranularStretcher.cpp
         Source/GranularStretcher.h
+        Source/PlaybackStyleGrid.cpp
+        Source/PlaybackStyleGrid.h
 )
 
 juce_generate_juce_header(NeditVST)
