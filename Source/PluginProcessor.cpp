@@ -120,6 +120,25 @@ double SlicerAudioProcessor::getNoteValueBeats (int index)
     return noteValueOptions[(size_t) index].beats;
 }
 
+int SlicerAudioProcessor::nearestNoteValueIndex (double targetBeats)
+{
+    int bestIndex = 0;
+    double bestDistance = std::numeric_limits<double>::max();
+
+    for (int i = 0; i < numNoteValueOptions; ++i)
+    {
+        const double distance = std::abs (getNoteValueBeats (i) - targetBeats);
+
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
 //==============================================================================
 SlicerAudioProcessor::SlicerAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -323,6 +342,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     pickJustStarted = true;
                     currentlyPlayingSliceIndexForUI.store (clockCurrentSliceIndex);
 
+                    // Beat-quantized slice length (Step 24) never applies in
+                    // Clock mode -- its own tick system already enforces
+                    // beat-alignment.
+                    currentPickBeatQuantized = false;
+
                     samplesSincePickStart = 0.0;
                     const double naturalLengthHostSamples =
                         (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
@@ -457,6 +481,46 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                                 : stretch ? (stretchDurationMultiplier * naturalLengthHostSamples)
                                                           : naturalLengthHostSamples;
 
+                // Beat-quantized slice length (Step 24) — Time-Stretch +
+                // Slice Length mode only, Forward/Ping-Pong only (Tape Stop
+                // and Stretch already deliberately override natural
+                // duration, so quantizing would fight rather than serve
+                // them). Computed once here, at pick-start, and consulted
+                // by the render step below for the rest of this pick's life.
+                currentPickBeatQuantized = false;
+
+                if (timeStretchMode && beatQuantizeSliceLengthEnabled.load()
+                    && (currentPlaybackStyle == PlaybackStyle::forward || pingPong)
+                    && currentSliceLength > 0)
+                {
+                    const double originalBpm = getCalculatedOriginalBpm();
+
+                    if (originalBpm > 0.0)
+                    {
+                        // Ping-Pong quantizes the FULL ROUND TRIP (there and
+                        // back) as one unit, before the fold -- same
+                        // "whichever unit should land on the beat grid" span
+                        // currentPickLengthInHostSamples already uses above.
+                        const double sliceNaturalSourceSeconds =
+                            (double) (pingPong ? 2 * currentSliceLength : currentSliceLength) / sampleSampleRate;
+                        const double naturalBeats = sliceNaturalSourceSeconds * originalBpm / 60.0;
+                        const double quantizedBeats = getNoteValueBeats (nearestNoteValueIndex (naturalBeats));
+                        const double targetHostSeconds = quantizedBeats * (60.0 / hostBpm);
+
+                        if (targetHostSeconds > 0.0)
+                        {
+                            currentPickBeatQuantized = true;
+                            currentPickQuantizedStretchRatio = sliceNaturalSourceSeconds / targetHostSeconds;
+
+                            const double quantizedLengthHostSamples = targetHostSeconds * hostSampleRate;
+                            currentPickLengthInHostSamples = quantizedLengthHostSamples;
+
+                            if (pingPong)
+                                currentPickMidpointHostSamples = quantizedLengthHostSamples * 0.5;
+                        }
+                    }
+                }
+
                 if (++pickAttempts > 1000)
                     return; // safety bail — render the rest of this block as silence
             }
@@ -588,7 +652,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // real-time spawn cadence) is deliberately left alone in
                 // that case, same as pitchRatio never touches it either.
                 double grainOutputHopSamples = outputHopSamples;
-                double grainSourceHopSamples = tapeStopActive ? (sourceHopSamples * tapeStopRateMultiplier) : sourceHopSamples;
+                // Beat-quantized slice length (Step 24): this pick's own
+                // stretch ratio replaces the global repitchRatio here,
+                // symmetrically with the scheduling-position advance rate
+                // below -- currentPickBeatQuantized is only ever true for
+                // Forward/Ping-Pong Slice-Length picks (never alongside
+                // tapeStopActive), so these two overrides can't collide.
+                double grainSourceHopSamples = tapeStopActive ? (sourceHopSamples * tapeStopRateMultiplier)
+                                              : currentPickBeatQuantized ? (outputHopSamples * srConversionRatio * currentPickQuantizedStretchRatio)
+                                                                         : sourceHopSamples;
                 double grainGrainSizeHostSamples = grainSizeHostSamples;
                 double grainPitchRatio = tapeStopActive ? (pitchRatio * tapeStopRateMultiplier) : pitchRatio;
                 GranularStretcher::WindowShape grainWindowShapeToUse = grainWindowShapeForBlock;
@@ -646,8 +718,17 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // this is what makes the read position (and therefore
             // schedulingEndSample/foldedReadPosition above) actually slow
             // down and, as the spec calls out, deliberately fall short of
-            // the slice's real end sample in real time.
-            const double effectivePlaybackRate = tapeStopActive ? (playbackRate * tapeStopRateMultiplier) : playbackRate;
+            // the slice's real end sample in real time. Beat-quantized
+            // slice length (Step 24) substitutes this pick's own quantized
+            // stretch ratio for repitchRatio here too, in exactly the same
+            // place playbackRate itself is built from repitchRatio above --
+            // that's what keeps currentPosition (and therefore this pick's
+            // actual finish time) landing precisely on the quantized target
+            // duration, matching the granular hop schedule above sample for
+            // sample.
+            const double effectivePlaybackRate = tapeStopActive ? (playbackRate * tapeStopRateMultiplier)
+                                                : currentPickBeatQuantized ? ((sampleSampleRate / hostSampleRate) * currentPickQuantizedStretchRatio)
+                                                                           : playbackRate;
             currentPosition += effectivePlaybackRate;
             samplesSincePickStart += 1.0;
         }

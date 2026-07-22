@@ -7,12 +7,15 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-23 editor: load button, reset-edits safety net, undo/redo, status
+/** Step-24 editor: load button, reset-edits safety net, undo/redo, status
     label, loop-length/sensitivity controls (with a live preview while
     dragging sensitivity), a manual BPM override toggle + field that
     replaces the bars-derived tempo calculation entirely when enabled,
     fade controls, pitch mode (Repitch vs Time-Stretch, with its grain
-    size/window shape/pitch shift controls),
+    size/window shape/beat-quantize-slice-length/pitch shift controls —
+    beat-quantize defaults ON whenever Time-Stretch is active, snapping
+    each Forward/Ping-Pong pick's rendered duration to the nearest note
+    value so consecutive picks always land on exact beat-grid positions),
     playback style (Forward / Ping-Pong / Tape Stop / Stretch, rolled once
     per pick regardless of trigger mode — Stretch always renders through
     the granular engine regardless of pitch mode, with its own hardcoded
@@ -89,6 +92,15 @@ private:
     juce::Slider grainSizeSlider;
     juce::Label windowShapeLabel;
     juce::ComboBox windowShapeSelector; // "Hann" / "Triangular"
+
+    // Beat-quantized slice length (Step 24) — also Time-Stretch-only, same
+    // show/hide group as the rest of this section. Only actually takes
+    // effect in Slice Length trigger mode (Clock mode's tick system
+    // already enforces beat-alignment), but stays visible/settable
+    // regardless of trigger mode, same as grain size/window shape/pitch
+    // shift above.
+    juce::ToggleButton beatQuantizeToggle { "Beat-quantize slice length" };
+
     juce::Label pitchShiftLabel;
     juce::Slider pitchShiftSlider; // semitones, -24 to +24
 

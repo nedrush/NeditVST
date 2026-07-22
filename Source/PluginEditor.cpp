@@ -121,6 +121,13 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
                                                     : SlicerAudioProcessor::GrainWindowShape::hann);
     };
 
+    controlsContent.addAndMakeVisible (beatQuantizeToggle);
+    beatQuantizeToggle.setToggleState (processor.getBeatQuantizeSliceLengthEnabled(), juce::dontSendNotification);
+    beatQuantizeToggle.onClick = [this]
+    {
+        processor.setBeatQuantizeSliceLengthEnabled (beatQuantizeToggle.getToggleState());
+    };
+
     controlsContent.addAndMakeVisible (pitchShiftLabel);
     pitchShiftLabel.setText ("Pitch shift (semitones)", juce::dontSendNotification);
     pitchShiftLabel.setJustificationType (juce::Justification::centredLeft);
@@ -286,7 +293,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 23: Trim markers + manual BPM override",
+    g.drawFittedText ("NeditVST — step 24: Beat-quantized slice length",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -358,6 +365,9 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     auto windowShapeRow = area.removeFromTop (30);
     windowShapeLabel.setBounds (windowShapeRow.removeFromLeft (140));
     windowShapeSelector.setBounds (windowShapeRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    beatQuantizeToggle.setBounds (area.removeFromTop (24));
     area.removeFromTop (10);
 
     auto pitchShiftRow = area.removeFromTop (30);
@@ -489,6 +499,7 @@ void SlicerAudioProcessorEditor::updatePitchModeVisibility()
     grainSizeSlider.setVisible (timeStretch);
     windowShapeLabel.setVisible (timeStretch);
     windowShapeSelector.setVisible (timeStretch);
+    beatQuantizeToggle.setVisible (timeStretch);
     pitchShiftLabel.setVisible (timeStretch);
     pitchShiftSlider.setVisible (timeStretch);
 }

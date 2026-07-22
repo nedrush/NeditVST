@@ -469,6 +469,44 @@ public:
     void setPitchShiftSemitones (float semitones) { pitchShiftSemitones.store (juce::jlimit (-24.0f, 24.0f, semitones)); }
     float getPitchShiftSemitones() const { return pitchShiftSemitones.load(); }
 
+    //=== Beat-quantized slice length (Step 24) ===
+    // Only takes effect for Pitch Mode == timeStretch AND Trigger Mode ==
+    // sliceLength — Clock mode already enforces beat-alignment via its own
+    // tick system, so this is simply not consulted there. Default ON
+    // whenever Time-Stretch is active: this is the standard behaviour for
+    // that mode, not an opt-in extra (unlike every other toggle in this
+    // class, which defaults to preserving prior behaviour — Time-Stretch
+    // mode itself is still off by default, so nothing changes for anyone
+    // who hasn't already opted into it).
+    //
+    // Per pick (computed once, at pick-start, in the Slice Length while-loop
+    // below — see currentPickBeatQuantized/currentPickQuantizedStretchRatio):
+    //   1. naturalBeats = (slice length in source seconds) / (60 / originalBpm)
+    //      — using the trim/override-aware getCalculatedOriginalBpm() above.
+    //      Ping-Pong uses the FULL ROUND TRIP (2x slice length) here, since
+    //      that's the unit whose duration should land on the beat grid.
+    //   2. Snap naturalBeats to the nearest entry in the existing note-value
+    //      palette (getNoteValueBeats()/numNoteValueOptions above — reused
+    //      directly, not duplicated) via nearestNoteValueIndex() below.
+    //   3. targetHostSeconds = quantizedBeats * (60 / hostBpm)
+    //   4. This pick's own stretch ratio = sliceNaturalSourceSeconds /
+    //      targetHostSeconds — substituted for the global repitchRatio,
+    //      symmetrically, everywhere repitchRatio would otherwise drive
+    //      this pick's granular hop schedule AND its scheduling-position
+    //      advance rate (see currentPickQuantizedStretchRatio's use in
+    //      processBlock). The result: this pick's rendered duration lands
+    //      exactly on quantizedBeats, so consecutive picks' durations
+    //      always sum to exact beat-grid positions -- drift becomes
+    //      structurally impossible rather than something to correct after
+    //      the fact.
+    // Tape Stop and Stretch skip this entirely (never even computed for
+    // those styles) — both already deliberately override natural duration
+    // as their whole purpose, and forcing a decel-to-zero or an extreme
+    // granular mangle onto an exact beat length would fight the effect
+    // rather than serve it.
+    void setBeatQuantizeSliceLengthEnabled (bool enabled) { beatQuantizeSliceLengthEnabled.store (enabled); }
+    bool getBeatQuantizeSliceLengthEnabled() const { return beatQuantizeSliceLengthEnabled.load(); }
+
 private:
     // Weighted-random pick across a list of weights. Falls back to
     // uniform-random if every weight is 0 (rather than picking nothing
@@ -515,6 +553,12 @@ private:
         if (index == 3) return PlaybackStyle::stretch;
         return PlaybackStyle::forward;
     }
+
+    // Beat-quantized slice length (Step 24): finds the note-value palette
+    // entry (see numNoteValueOptions/getNoteValueBeats() above) closest to
+    // targetBeats. Reuses the existing palette directly rather than
+    // duplicating it.
+    static int nearestNoteValueIndex (double targetBeats);
 
     // Shared by redetectSlices() and every manual-point mutation: re-runs
     // auto-detection at the given sensitivity, merges the result with the
@@ -698,6 +742,21 @@ private:
     std::atomic<float> pitchShiftSemitones { 0.0f };
     std::atomic<bool> granularNeedsReseed { false };
     GranularStretcher granularStretcher;
+
+    // Beat-quantized slice length (Step 24) — default ON, see the public
+    // setter/getter's doc comment above for why that's correct here
+    // (unlike every other toggle in this class).
+    std::atomic<bool> beatQuantizeSliceLengthEnabled { true };
+
+    // Per-pick beat-quantization state (Step 24, audio thread only) —
+    // computed once at pick-start in Slice Length mode (never in Clock
+    // mode, and never for Tape Stop/Stretch picks — currentPickBeatQuantized
+    // stays false for those, and currentPickQuantizedStretchRatio is simply
+    // not consulted). Substitutes for repitchRatio, symmetrically, in both
+    // this pick's granular hop schedule and its scheduling-position advance
+    // rate — see processBlock().
+    bool currentPickBeatQuantized = false;
+    double currentPickQuantizedStretchRatio = 1.0;
 
     // Sensible starting defaults — moderate sensitivity, 30ms holdoff to
     // avoid double-triggering on a single drum hit's ringing tail.
