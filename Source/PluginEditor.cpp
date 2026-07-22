@@ -94,6 +94,13 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         updatePitchModeVisibility();
     };
 
+    controlsContent.addAndMakeVisible (beatQuantizeToggleRepitch);
+    beatQuantizeToggleRepitch.setToggleState (processor.getBeatQuantizeSliceLengthEnabledRepitch(), juce::dontSendNotification);
+    beatQuantizeToggleRepitch.onClick = [this]
+    {
+        processor.setBeatQuantizeSliceLengthEnabledRepitch (beatQuantizeToggleRepitch.getToggleState());
+    };
+
     controlsContent.addAndMakeVisible (grainSizeLabel);
     grainSizeLabel.setText ("Grain size (ms)", juce::dontSendNotification);
     grainSizeLabel.setJustificationType (juce::Justification::centredLeft);
@@ -297,7 +304,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 25: Audition + transient-snapping trim",
+    g.drawFittedText ("NeditVST — step 26: Beat-quantize toggle for Repitch",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -361,6 +368,9 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     auto pitchModeRow = area.removeFromTop (30);
     pitchModeLabel.setBounds (pitchModeRow.removeFromLeft (140));
     pitchModeSelector.setBounds (pitchModeRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    beatQuantizeToggleRepitch.setBounds (area.removeFromTop (24));
     area.removeFromTop (10);
 
     auto grainSizeRow = area.removeFromTop (30);
@@ -513,6 +523,8 @@ void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()
 void SlicerAudioProcessorEditor::updatePitchModeVisibility()
 {
     const bool timeStretch = pitchModeSelector.getSelectedId() == 2;
+
+    beatQuantizeToggleRepitch.setVisible (! timeStretch);
 
     grainSizeLabel.setVisible (timeStretch);
     grainSizeSlider.setVisible (timeStretch);

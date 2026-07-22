@@ -559,8 +559,44 @@ public:
     // as their whole purpose, and forcing a decel-to-zero or an extreme
     // granular mangle onto an exact beat length would fight the effect
     // rather than serve it.
+    //
+    // The target-duration calculation itself (steps 1-3 above) is shared
+    // with Repitch mode's own separate toggle just below — see
+    // computeBeatQuantizeTarget() — since it's identical regardless of
+    // pitch mode; only what the resulting ratio gets applied TO differs.
     void setBeatQuantizeSliceLengthEnabled (bool enabled) { beatQuantizeSliceLengthEnabled.store (enabled); }
     bool getBeatQuantizeSliceLengthEnabled() const { return beatQuantizeSliceLengthEnabled.load(); }
+
+    //=== Beat-quantized slice length — Repitch mode (Step 26) ===
+    // Same label, same underlying target-duration calculation as the
+    // Time-Stretch toggle above (computeBeatQuantizeTarget() is shared, not
+    // duplicated) — but its own separate state, since the defaults differ,
+    // and its own separate effect: instead of handing the target duration
+    // to GranularStretcher's hop schedule, it's used to compute THIS PICK's
+    // own varispeed playback rate, the same way repitchRatio already
+    // controls duration and pitch together for every other pick. In
+    // practice this needs no pitch-mode-specific code at all beyond the
+    // pick-start calculation: processBlock()'s shared scheduling-position
+    // advance (currentPosition += effectivePlaybackRate) already consults
+    // currentPickBeatQuantized/currentPickQuantizedStretchRatio regardless
+    // of pitch mode, and in Repitch mode that position IS the direct read
+    // pointer — so substituting the quantized ratio there is exactly
+    // "adjust the normal repitch-mode rate calculation." This introduces a
+    // small per-pick pitch variance, same trade-off already accepted for
+    // the Time-Stretch side of this feature — nothing to compensate for or
+    // hide.
+    //
+    // Default OFF, unlike Time-Stretch's default-on: this one has a real
+    // pitch trade-off, so it's opt-in rather than the new standard
+    // behaviour. With it off (the default), Repitch mode is byte-identical
+    // to before this toggle existed.
+    //
+    // Same exclusions as the Time-Stretch toggle: Tape Stop/Stretch skip
+    // it regardless of which Pitch Mode is active, and it only applies in
+    // Slice Length trigger mode (Clock mode's tick system already enforces
+    // beat-alignment either way).
+    void setBeatQuantizeSliceLengthEnabledRepitch (bool enabled) { beatQuantizeSliceLengthEnabledRepitch.store (enabled); }
+    bool getBeatQuantizeSliceLengthEnabledRepitch() const { return beatQuantizeSliceLengthEnabledRepitch.load(); }
 
 private:
     // Weighted-random pick across a list of weights. Falls back to
@@ -614,6 +650,30 @@ private:
     // targetBeats. Reuses the existing palette directly rather than
     // duplicating it.
     static int nearestNoteValueIndex (double targetBeats);
+
+    // Beat-quantized slice length (Step 24/26) — the shared target-duration
+    // calculation both the Time-Stretch and Repitch toggles feed into, so
+    // it's computed once here rather than duplicated per pitch mode:
+    //   1. naturalBeats = (slice length in source seconds) / (60 / originalBpm)
+    //      — Ping-Pong passes pingPong=true, using the FULL ROUND TRIP
+    //      (2x sliceLength) as the span whose duration should land on the
+    //      beat grid.
+    //   2. Snap to the nearest note-value palette entry (nearestNoteValueIndex).
+    //   3. targetHostSeconds = quantizedBeats * (60 / hostBpm)
+    //   4. stretchRatio = sliceNaturalSourceSeconds / targetHostSeconds —
+    //      this pick's own replacement for the global repitchRatio.
+    // result.quantized stays false (stretchRatio/targetHostSeconds
+    // meaningless) if sliceLength/originalBpm/hostBpm/targetHostSeconds
+    // are degenerate (<= 0) — callers check this before using the rest.
+    struct BeatQuantizeResult
+    {
+        bool quantized = false;
+        double stretchRatio = 1.0;      // replaces repitchRatio for this pick
+        double targetHostSeconds = 0.0; // this pick's target duration, in host seconds
+    };
+
+    static BeatQuantizeResult computeBeatQuantizeTarget (int sliceLength, bool pingPong,
+                                                          double sampleSampleRate, double originalBpm, double hostBpm);
 
     // Shared by redetectSlices() and every manual-point mutation: re-runs
     // auto-detection at the given sensitivity, merges the result with the
@@ -817,6 +877,11 @@ private:
     // setter/getter's doc comment above for why that's correct here
     // (unlike every other toggle in this class).
     std::atomic<bool> beatQuantizeSliceLengthEnabled { true };
+
+    // Beat-quantized slice length — Repitch mode (Step 26). Default OFF,
+    // unlike the Time-Stretch toggle above: this one has a real pitch
+    // trade-off, so it's opt-in rather than a new standard behaviour.
+    std::atomic<bool> beatQuantizeSliceLengthEnabledRepitch { false };
 
     // Per-pick beat-quantization state (Step 24, audio thread only) —
     // computed once at pick-start in Slice Length mode (never in Clock

@@ -7,18 +7,21 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-25 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-26 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts), status label, loop-length/sensitivity controls
     (with a live preview while dragging sensitivity), a manual BPM
     override toggle + field that replaces the bars-derived tempo
     calculation entirely when enabled,
-    fade controls, pitch mode (Repitch vs Time-Stretch, with its grain
-    size/window shape/beat-quantize-slice-length/pitch shift controls —
-    beat-quantize defaults ON whenever Time-Stretch is active, snapping
-    each Forward/Ping-Pong pick's rendered duration to the nearest note
-    value so consecutive picks always land on exact beat-grid positions),
+    fade controls, pitch mode (Repitch vs Time-Stretch, each with its own
+    Beat-quantize-slice-length toggle — Time-Stretch's defaults ON, since
+    it's a free improvement there; Repitch's own separate toggle defaults
+    OFF, since quantizing there trades off pitch accuracy for beat-exact
+    duration — plus Time-Stretch's grain size/window shape/pitch shift
+    controls; both toggles snap each Forward/Ping-Pong pick's rendered
+    duration to the nearest note value so consecutive picks always land
+    on exact beat-grid positions),
     playback style (Forward / Ping-Pong / Tape Stop / Stretch, rolled once
     per pick regardless of trigger mode — Stretch always renders through
     the granular engine regardless of pitch mode, with its own hardcoded
@@ -96,6 +99,13 @@ private:
 
     juce::Label pitchModeLabel;
     juce::ComboBox pitchModeSelector; // "Repitch" / "Time-Stretch"
+
+    // Beat-quantized slice length — Repitch mode (Step 26). Same label and
+    // concept as the Time-Stretch toggle below, but its own separate
+    // control/state (defaults differ: this one's OFF by default, since it
+    // trades off pitch accuracy rather than being a free improvement).
+    // Repitch-only, shown/hidden opposite the Time-Stretch-only group.
+    juce::ToggleButton beatQuantizeToggleRepitch { "Beat-quantize slice length" };
 
     // Time-Stretch-only controls — same reserved-space/hide pattern as the
     // Clock-mode-only controls below (grain overlap is fixed at 50% and
