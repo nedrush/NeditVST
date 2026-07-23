@@ -165,7 +165,18 @@ SlicerAudioProcessor::BeatQuantizeResult SlicerAudioProcessor::computeBeatQuanti
     // beat grid" span the pick-length calculation elsewhere uses.
     const double sliceNaturalSourceSeconds = (double) (pingPong ? 2 * sliceLength : sliceLength) / sampleSampleRate;
     const double naturalBeats = sliceNaturalSourceSeconds * originalBpm / 60.0;
-    const double quantizedBeats = getNoteValueBeats (nearestNoteValueIndex (naturalBeats));
+
+    // The note-value palette only goes up to 1n (4 beats, one bar) --
+    // searching it for anything longer would wrongly clamp every
+    // multi-bar-length slice down to a single bar, regardless of how many
+    // bars it actually spans. For those, round to the nearest whole-bar
+    // multiple instead; the palette search remains exactly as before for
+    // anything within one bar, where it's still the right (finer-grained)
+    // tool.
+    const double quantizedBeats = (naturalBeats > 4.0)
+        ? std::round (naturalBeats / 4.0) * 4.0
+        : getNoteValueBeats (nearestNoteValueIndex (naturalBeats));
+
     const double targetHostSeconds = quantizedBeats * (60.0 / hostBpm);
 
     if (targetHostSeconds <= 0.0)

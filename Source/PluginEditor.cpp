@@ -355,7 +355,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 31: Waveform width, zoom/pan, and beat grid",
+    g.drawFittedText ("NeditVST — step 32: Zoom speed, beat-quantize cap fix, edge auto-pan",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 

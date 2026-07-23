@@ -7,7 +7,7 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-31 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-32 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -52,7 +52,9 @@
     and its own scroll-to-zoom/Shift-scroll-to-pan view range — every
     interaction above continues to work correctly at any zoom/pan state,
     not just fully zoomed out, since all of it maps through the same
-    visible-range seam internally. */
+    visible-range seam internally, and dragging a trim handle or manual
+    point toward either edge of a zoomed-in view auto-pans to follow
+    (Step 32), rather than stalling at the boundary. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer

@@ -534,6 +534,7 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
 {
     if (draggingTrimHandle == TrimHandle::start)
     {
+        autoPanIfNearEdge (event.x);
         const bool snap = ! event.mods.isShiftDown();
         processor.setTrimStartSample (xToSample (event.x), snap);
         refresh();
@@ -546,6 +547,7 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
 
     if (draggingTrimHandle == TrimHandle::end)
     {
+        autoPanIfNearEdge (event.x);
         const bool snap = ! event.mods.isShiftDown();
         processor.setTrimEndSample (xToSample (event.x), snap);
         refresh();
@@ -558,6 +560,7 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
 
     if (draggingManualPointId >= 0)
     {
+        autoPanIfNearEdge (event.x);
         const bool snap = ! event.mods.isShiftDown();
         processor.moveManualSlicePoint (draggingManualPointId, xToSample (event.x), snap);
         refresh();
@@ -720,6 +723,55 @@ void WaveformDisplay::clampVisibleRange()
         visibleEndSample = juce::jmin (totalSamples, visibleStartSample + minRange);
         visibleStartSample = juce::jmax (0, visibleEndSample - minRange);
     }
+}
+
+void WaveformDisplay::autoPanIfNearEdge (int x)
+{
+    if (! processor.hasSample())
+        return;
+
+    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+
+    if (totalSamples <= 0)
+        return;
+
+    const int width = juce::jmax (1, getWidth());
+    const int visibleRange = visibleEndSample - visibleStartSample;
+
+    int panSamples = 0;
+
+    if (x < autoPanEdgeThresholdPixels)
+        panSamples = -(int) ((float) visibleRange * autoPanFractionPerDragEvent);
+    else if (x > width - autoPanEdgeThresholdPixels)
+        panSamples = (int) ((float) visibleRange * autoPanFractionPerDragEvent);
+
+    if (panSamples == 0)
+        return;
+
+    // Same clamp-to-[0, totalSamples] shape as mouseWheelMove()'s pan
+    // branch -- range width is preserved, just shifted.
+    int newStart = visibleStartSample + panSamples;
+    int newEnd = visibleEndSample + panSamples;
+
+    if (newStart < 0)
+    {
+        newEnd -= newStart;
+        newStart = 0;
+    }
+
+    if (newEnd > totalSamples)
+    {
+        newStart -= (newEnd - totalSamples);
+        newEnd = totalSamples;
+    }
+
+    visibleStartSample = juce::jmax (0, newStart);
+    visibleEndSample = juce::jmin (totalSamples, newEnd);
+
+    // Deliberately no rebuildWaveformPeaks()/repaint() here -- every
+    // caller already follows this with refresh() (which does both) once
+    // it's finished computing this drag event's new position from the
+    // now-updated visible range.
 }
 
 bool WaveformDisplay::isSupportedAudioFile (const juce::File& file)

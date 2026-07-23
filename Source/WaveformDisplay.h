@@ -120,6 +120,17 @@ private:
     int minVisibleRangeSamples() const; // a few ms worth, derived from the sample's own rate -- the zoom-in floor
     void clampVisibleRange();           // keeps [visibleStartSample, visibleEndSample) valid after any change
 
+    // Auto-pan while dragging (Step 32) -- called from mouseDrag() for the
+    // trim-handle and manual-point-drag branches only, before that drag's
+    // own xToSample(event.x) call, so a drag toward either edge of a
+    // zoomed-in view scrolls the view to follow rather than stalling once
+    // the mouse reaches the component boundary. Same underlying pan
+    // mechanism as Shift+scroll (mouseWheelMove), just triggered by drag
+    // proximity to an edge instead of a wheel notch, and by a smaller
+    // amount per call since mouseDrag fires far more often than a wheel
+    // notch does.
+    void autoPanIfNearEdge (int x);
+
     // Trim markers (Step 23).
     enum class TrimHandle { none, start, end };
     TrimHandle findTrimHandleNear (int x) const;
@@ -178,8 +189,17 @@ private:
     // can never zoom into single-sample nonsense; the other two just set
     // how much one wheel notch zooms/pans by.
     static constexpr float minVisibleRangeMs = 20.0f;
-    static constexpr float zoomFactorPerNotch = 1.2f;
+    static constexpr float zoomFactorPerNotch = 1.5f; // was 1.2f -- too sluggish, per feedback
     static constexpr float panFractionPerNotch = 0.15f;
+
+    // Auto-pan-while-dragging tuning (Step 32). Threshold is in pixels
+    // (not sample-dependent, unlike the pan amount itself) since it's
+    // about how close the mouse is to the component's edge, regardless of
+    // zoom level. The per-event fraction is much smaller than
+    // panFractionPerNotch since mouseDrag fires far more often than a
+    // single wheel notch.
+    static constexpr int autoPanEdgeThresholdPixels = 20;
+    static constexpr float autoPanFractionPerDragEvent = 0.02f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformDisplay)
 };
