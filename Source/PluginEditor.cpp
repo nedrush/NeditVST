@@ -222,6 +222,29 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         updateAfterSampleOrSliceChange();
     };
 
+    controlsContent.addAndMakeVisible (quantizeTransientsToggle);
+    quantizeTransientsToggle.setToggleState (processor.getQuantizeTransientsEnabled(), juce::dontSendNotification);
+    quantizeTransientsToggle.onClick = [this]
+    {
+        processor.setQuantizeTransientsEnabled (quantizeTransientsToggle.getToggleState());
+        updateQuantizeTransientsVisibility();
+        updateAfterSampleOrSliceChange();
+    };
+
+    controlsContent.addAndMakeVisible (quantizeGridLabel);
+    quantizeGridLabel.setText ("Grid", juce::dontSendNotification);
+    quantizeGridLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (quantizeGridSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
+        quantizeGridSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    quantizeGridSelector.setSelectedId (processor.getQuantizeGridIndex() + 1, juce::dontSendNotification);
+    quantizeGridSelector.onChange = [this]
+    {
+        processor.setQuantizeGridIndex (quantizeGridSelector.getSelectedId() - 1);
+        updateAfterSampleOrSliceChange();
+    };
+
     controlsContent.addAndMakeVisible (fadeInLabel);
     fadeInLabel.setText ("Fade in (ms)", juce::dontSendNotification);
     fadeInLabel.setJustificationType (juce::Justification::centredLeft);
@@ -340,6 +363,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     updateTriggerModeVisibility();
     updatePitchModeVisibility();
     updateManualBpmOverrideVisibility();
+    updateQuantizeTransientsVisibility();
 
     // Zoom/pan (Step 31) — live directly on the editor, not controlsContent,
     // so they stay visible next to the waveform regardless of scroll
@@ -394,7 +418,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 34: Mandatory periodic reset for Slice Length mode",
+    g.drawFittedText ("NeditVST — step 35: Quantize detected transients to grid",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
     // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider
@@ -520,6 +544,14 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     auto sensitivityRow = area.removeFromTop (30);
     sensitivityLabel.setBounds (sensitivityRow.removeFromLeft (140));
     sensitivitySlider.setBounds (sensitivityRow);
+    area.removeFromTop (10);
+
+    quantizeTransientsToggle.setBounds (area.removeFromTop (24));
+    area.removeFromTop (10);
+
+    auto quantizeGridRow = area.removeFromTop (30);
+    quantizeGridLabel.setBounds (quantizeGridRow.removeFromLeft (140));
+    quantizeGridSelector.setBounds (quantizeGridRow.removeFromLeft (150));
     area.removeFromTop (20);
 
     auto fadeInRow = area.removeFromTop (30);
@@ -670,6 +702,14 @@ void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()
 
     manualBpmOverrideLabel.setVisible (enabled);
     manualBpmOverrideSlider.setVisible (enabled);
+}
+
+void SlicerAudioProcessorEditor::updateQuantizeTransientsVisibility()
+{
+    const bool enabled = quantizeTransientsToggle.getToggleState();
+
+    quantizeGridLabel.setVisible (enabled);
+    quantizeGridSelector.setVisible (enabled);
 }
 
 void SlicerAudioProcessorEditor::updatePitchModeVisibility()

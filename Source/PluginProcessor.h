@@ -83,6 +83,42 @@ public:
 
     float getSensitivity() const { return currentSensitivity.load(); }
 
+    //=== Quantize detected transients to grid (Step 35) ===
+    // Auto-detected transients only -- manual points are deliberately
+    // user-placed (including via Shift's explicit free-placement bypass),
+    // so quantizing them would fight the user's own intent. Snaps each
+    // surviving (non-excluded) auto-detected onset to the nearest step on
+    // the Grid note-value palette (reusing the existing 20-value palette
+    // via getNoteValueName()/getNoteValueBeats() -- no separate table),
+    // using the same source-tempo derivation (getCalculatedOriginalBpm(),
+    // itself derived from computeSourceSpanSeconds()) already used
+    // throughout this class. See quantizeOnsetToGrid() and
+    // mergeOnsetsIntoSlices() for exactly where this plugs into the
+    // existing detection pipeline. Hard snap only for v1 -- no adjustable
+    // blend/strength control, matching the established "ship the simple
+    // version first" pattern; add one later only if it turns out to be
+    // needed once this has actually been heard in use.
+    //
+    // Off by default, same "preserve existing behaviour until explicitly
+    // opted into" convention as every other toggle in this class. Both
+    // setters immediately re-run detection (same as setSensitivityAndRedetect
+    // above), since this changes the actual slice boundaries.
+    void setQuantizeTransientsEnabled (bool enabled)
+    {
+        quantizeTransientsEnabled.store (enabled);
+        redetectSlices (currentSensitivity.load(), defaultHoldoffMs);
+    }
+
+    bool getQuantizeTransientsEnabled() const { return quantizeTransientsEnabled.load(); }
+
+    void setQuantizeGridIndex (int index)
+    {
+        quantizeGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        redetectSlices (currentSensitivity.load(), defaultHoldoffMs);
+    }
+
+    int getQuantizeGridIndex() const { return quantizeGridIndex.load(); }
+
     //=== Trim markers (Step 23/25) ===
     // Two independent boundaries, in source-sample units, confining
     // EVERYTHING else in this class to [trimStart, trimEnd): transient
@@ -806,8 +842,23 @@ private:
     // any manual point that now falls outside the trim range rather than
     // deleting it outright — same "soft exclude" treatment already used
     // for auto-detected exclusions, so widening the trim again later can
-    // bring it back. Must be called with sampleLock already held.
+    // bring it back. Must be called with sampleLock already held. Also
+    // where Quantize Transients (Step 35) plugs in -- see
+    // quantizeOnsetToGrid() below, called on each surviving auto-detected
+    // onset before it's merged with manual points.
     std::vector<Slice> mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices, int trimStart, int trimEnd) const;
+
+    // Quantize detected transients to grid (Step 35) -- snaps a single
+    // auto-detected onset's sample position to the nearest Grid step.
+    // trimStart is passed in (rather than re-read from trimStartSample)
+    // since the caller (mergeOnsetsIntoSlices) already has it and both
+    // must agree on the same value within one merge pass. Returns
+    // onsetSample UNCHANGED if the source tempo is degenerate (<= 0 BPM)
+    // -- same defensive fallback style already used by
+    // computeBeatQuantizeTarget() for the analogous per-pick feature.
+    // Clamped into [trimStart, trimEnd) afterward so an onset near the
+    // very edge of the trim can never quantize to a position outside it.
+    int quantizeOnsetToGrid (int onsetSample, int trimStart, int trimEnd) const;
 
     // Unifies the tempo math (Step 23) that both Trim markers and Manual
     // BPM override feed into:
@@ -902,6 +953,15 @@ private:
     std::atomic<float> currentSensitivity { defaultSensitivity };
     std::atomic<float> fadeInMs { 5.0f };
     std::atomic<float> fadeOutMs { 15.0f };
+
+    // Quantize detected transients to grid (Step 35) -- off by default,
+    // same "preserve existing behaviour until explicitly opted into"
+    // convention as every other toggle in this class. quantizeGridIndex
+    // defaults to index 13 (4n / one quarter note), the same default
+    // clockReferenceIndex already uses, for a consistent "quarter note"
+    // starting point across every note-value-palette control.
+    std::atomic<bool> quantizeTransientsEnabled { false };
+    std::atomic<int> quantizeGridIndex { 13 };
 
     std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)

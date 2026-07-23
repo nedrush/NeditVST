@@ -1207,7 +1207,19 @@ std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vecto
         }
 
         if (! excluded)
-            onsets.push_back (s.startSample);
+        {
+            // Quantize detected transients to grid (Step 35) -- applied
+            // AFTER exclusion matching, against the ORIGINAL (unquantized)
+            // position: an exclusion click targets the raw detected peak
+            // the user actually saw on the waveform, and matching against
+            // that first is what keeps an exclusion correct regardless of
+            // whether quantization is on. Manual points below are never
+            // touched by this -- they're pushed as-is, further down.
+            const int onsetSample = quantizeTransientsEnabled.load()
+                ? quantizeOnsetToGrid (s.startSample, trimStart, trimEnd)
+                : s.startSample;
+            onsets.push_back (onsetSample);
+        }
     }
 
     // Manual points outside the current trim range are filtered out here
@@ -1237,6 +1249,37 @@ std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vecto
     }
 
     return result;
+}
+
+int SlicerAudioProcessor::quantizeOnsetToGrid (int onsetSample, int trimStart, int trimEnd) const
+{
+    const double gridBeats = getNoteValueBeats (quantizeGridIndex.load());
+
+    if (gridBeats <= 0.0)
+        return onsetSample;
+
+    // Same source-tempo derivation used everywhere else in this class
+    // (computeBeatQuantizeTarget's naturalBeats calculation for the
+    // analogous per-pick feature works the same way): originalBpm/60
+    // converts a duration in seconds directly to beats, so there's no
+    // need to separately compute a "seconds per beat" intermediate.
+    const double originalBpm = getCalculatedOriginalBpm();
+
+    if (originalBpm <= 0.0 || sampleSampleRate <= 0.0)
+        return onsetSample;
+
+    const double onsetSeconds = (double) (onsetSample - trimStart) / sampleSampleRate;
+    const double onsetBeats = onsetSeconds * (originalBpm / 60.0);
+    const double nearestGridStep = std::round (onsetBeats / gridBeats);
+    const double quantizedBeats = nearestGridStep * gridBeats;
+    const double quantizedSeconds = quantizedBeats * (60.0 / originalBpm);
+    const double quantizedSampleDouble = (double) trimStart + quantizedSeconds * sampleSampleRate;
+
+    // Clamped so an onset near either edge of the trim can never quantize
+    // to a position outside it -- trimEnd - 1 mirrors the same upper bound
+    // addManualSlicePoint()/setTrimStartSample() etc. already use for
+    // exactly this reason.
+    return juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), (int) std::llround (quantizedSampleDouble));
 }
 
 int SlicerAudioProcessor::addManualSlicePoint (int targetSample, bool snapToTransient)

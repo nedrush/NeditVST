@@ -7,7 +7,7 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-34 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-35 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -63,7 +63,11 @@
     it feeds depends on both — so an orange highlight (Step 33) appears
     around the Loop Length label/field whenever the trim actually changes,
     until the user touches that control at all (even re-entering the same
-    value counts as acknowledgment). */
+    value counts as acknowledgment). Right below Transient sensitivity, a
+    "Quantize transients" toggle (Step 35) plus a Grid note-value dropdown
+    (visible only while the toggle is on) snaps auto-detected transients —
+    never manual points — onto the selected grid, correcting the noisy
+    detection input at the root of most of this session's bugs. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -83,6 +87,7 @@ private:
     void updateTriggerModeVisibility(); // shows/hides the Clock-only controls
     void updatePitchModeVisibility(); // shows/hides the Time-Stretch-only controls
     void updateManualBpmOverrideVisibility(); // shows/hides the BPM numeric field
+    void updateQuantizeTransientsVisibility(); // shows/hides the Grid dropdown
     int layoutControlsContent (int contentWidth); // lays out every control below; returns the total height they need
 
     SlicerAudioProcessor& processor;
@@ -180,6 +185,15 @@ private:
 
     juce::Label sensitivityLabel;
     juce::Slider sensitivitySlider;
+
+    // Quantize detected transients to grid (Step 35) — auto-detected
+    // transients only, never manual points (see PluginProcessor.h's
+    // doc comment for why). Grid dropdown visible only while the toggle
+    // is on, same show/hide-in-reserved-space pattern used throughout
+    // this editor.
+    juce::ToggleButton quantizeTransientsToggle { "Quantize transients" };
+    juce::Label quantizeGridLabel;
+    juce::ComboBox quantizeGridSelector; // reuses the same 20-value note-value palette as Clock reference/Beat-quantize
 
     juce::Label fadeInLabel;
     juce::Slider fadeInSlider;
