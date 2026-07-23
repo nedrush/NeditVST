@@ -7,7 +7,7 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-32 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-33 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -54,7 +54,12 @@
     not just fully zoomed out, since all of it maps through the same
     visible-range seam internally, and dragging a trim handle or manual
     point toward either edge of a zoomed-in view auto-pans to follow
-    (Step 32), rather than stalling at the boundary. */
+    (Step 32), rather than stalling at the boundary. Trimming the sample
+    doesn't auto-adjust Loop Length (bars) — since the tempo calculation
+    it feeds depends on both — so an orange highlight (Step 33) appears
+    around the Loop Length label/field whenever the trim actually changes,
+    until the user touches that control at all (even re-entering the same
+    value counts as acknowledgment). */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -108,6 +113,19 @@ private:
     juce::Label loopLengthLabel;
     juce::Slider loopLengthSlider; // integer bars, e.g. 1-8
     juce::Label calculatedBpmLabel;
+
+    // Loop length staleness flag (Step 33) — Loop Length (bars) drives the
+    // bars-derived original-tempo calculation (computeSourceSpanSeconds()),
+    // but that calculation only knows the CURRENT trim range, not whether
+    // it's still the right bar count for whatever the trim now covers.
+    // Trimming doesn't auto-adjust Loop Length (there's no way to guess
+    // the right value), so instead this makes the now-possibly-wrong
+    // value impossible to miss: set true whenever waveformDisplay reports
+    // an actual trim change, cleared the moment the user acknowledges by
+    // touching loopLengthSlider at all (even re-entering the same value —
+    // the point is acknowledgment, not a real change). Purely a
+    // visibility aid; doesn't affect any tempo/audio calculation itself.
+    bool loopLengthNeedsAttention = false;
 
     // Manual BPM override (Step 23) — replaces the bars-derived tempo
     // calculation entirely when enabled, rather than working alongside it.

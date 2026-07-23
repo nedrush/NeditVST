@@ -48,6 +48,18 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         const double bpm = processor.getCalculatedOriginalBpm();
         calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
                                      juce::dontSendNotification);
+
+        // Any interaction with this control counts as acknowledgment
+        // (Step 33) -- even re-entering the same value -- so the
+        // staleness highlight clears the moment the user looks at it,
+        // not only when the value actually changes.
+        loopLengthNeedsAttention = false;
+        repaint();
+    };
+    loopLengthSlider.onDragEnd = [this]
+    {
+        loopLengthNeedsAttention = false;
+        repaint();
     };
 
     controlsContent.addAndMakeVisible (calculatedBpmLabel);
@@ -327,7 +339,18 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     addAndMakeVisible (waveformDisplay);
     waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
-    waveformDisplay.onTrimChanged = [this] { updateAfterSampleOrSliceChange(); };
+    waveformDisplay.onTrimChanged = [this]
+    {
+        updateAfterSampleOrSliceChange();
+
+        // Loop Length (bars) doesn't auto-adjust when the trim range
+        // changes -- there's no way to guess the right new value -- so
+        // flag it as needing a fresh look instead (Step 33), cleared the
+        // moment the user touches loopLengthSlider (see its onValueChange/
+        // onDragEnd above).
+        loopLengthNeedsAttention = true;
+        repaint();
+    };
 
     // Fixed window size regardless of how much lives inside controlsContent
     // (it scrolls internally within controlsViewport's fixed height) —
@@ -355,8 +378,31 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 32: Zoom speed, beat-quantize cap fix, edge auto-pan",
+    g.drawFittedText ("NeditVST — step 33: Flag Loop length as stale on trim change",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
+
+    // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider
+    // live inside controlsContent, scrolled by controlsViewport -- rather
+    // than computing their position by hand, getLocalArea() walks the
+    // whole parent chain (including the viewport's current scroll
+    // offset) to get their real on-screen rectangle in THIS component's
+    // coordinate space, so the highlight tracks correctly regardless of
+    // scroll position. Clipped to the viewport's own bounds so nothing
+    // is drawn if the control is currently scrolled out of view, and
+    // skipped entirely while hidden (Pitch Mode == NoSync, which hides
+    // both — see updatePitchModeVisibility()).
+    if (loopLengthNeedsAttention && loopLengthLabel.isVisible())
+    {
+        juce::Graphics::ScopedSaveState saveState (g);
+        g.reduceClipRegion (controlsViewport.getBounds());
+
+        const auto labelBounds = getLocalArea (&loopLengthLabel, loopLengthLabel.getLocalBounds());
+        const auto sliderBounds = getLocalArea (&loopLengthSlider, loopLengthSlider.getLocalBounds());
+        const auto highlightBounds = labelBounds.getUnion (sliderBounds).expanded (4);
+
+        g.setColour (juce::Colours::orange);
+        g.drawRect (highlightBounds, 2);
+    }
 }
 
 void SlicerAudioProcessorEditor::resized()

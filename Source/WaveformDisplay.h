@@ -98,10 +98,14 @@ public:
     // updates (status text, BPM display).
     std::function<void()> onSampleChanged;
 
-    // Set by the editor — called on every trim handle drag (Step 23), so
-    // the "~X BPM" label (computeSourceSpanSeconds() depends on the trim
-    // range) and slice-count status text stay live while dragging, rather
-    // than only updating on the next unrelated editor action.
+    // Set by the editor — called whenever either trim handle's position
+    // actually changes (Step 23), from a drag or from snap-to-transient,
+    // but NOT for a drag event that lands on the same (clamped) position
+    // as before (Step 33) — so the "~X BPM" label (computeSourceSpanSeconds()
+    // depends on the trim range) and slice-count status text stay live
+    // while dragging, and the editor can flag Loop Length as needing a
+    // fresh look (Step 33) without re-flagging it every frame for a value
+    // that never moved.
     std::function<void()> onTrimChanged;
 
 private:

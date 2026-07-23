@@ -535,11 +535,17 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
     if (draggingTrimHandle == TrimHandle::start)
     {
         autoPanIfNearEdge (event.x);
+        const int beforeTrimStart = processor.getTrimStartSample();
         const bool snap = ! event.mods.isShiftDown();
         processor.setTrimStartSample (xToSample (event.x), snap);
         refresh();
 
-        if (onTrimChanged)
+        // Only fire on an ACTUAL change (Step 33) -- a drag that's
+        // clamped at the same position every frame (e.g. pinned against
+        // the other handle, or against the buffer's own edge) shouldn't
+        // keep re-flagging Loop Length as stale for a value that never
+        // moved.
+        if (onTrimChanged && processor.getTrimStartSample() != beforeTrimStart)
             onTrimChanged();
 
         return;
@@ -548,11 +554,12 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
     if (draggingTrimHandle == TrimHandle::end)
     {
         autoPanIfNearEdge (event.x);
+        const int beforeTrimEnd = processor.getTrimEndSample();
         const bool snap = ! event.mods.isShiftDown();
         processor.setTrimEndSample (xToSample (event.x), snap);
         refresh();
 
-        if (onTrimChanged)
+        if (onTrimChanged && processor.getTrimEndSample() != beforeTrimEnd)
             onTrimChanged();
 
         return;
