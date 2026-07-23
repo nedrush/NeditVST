@@ -169,13 +169,38 @@ SlicerAudioProcessor::BeatQuantizeResult SlicerAudioProcessor::computeBeatQuanti
     // The note-value palette only goes up to 1n (4 beats, one bar) --
     // searching it for anything longer would wrongly clamp every
     // multi-bar-length slice down to a single bar, regardless of how many
-    // bars it actually spans. For those, round to the nearest whole-bar
-    // multiple instead; the palette search remains exactly as before for
-    // anything within one bar, where it's still the right (finer-grained)
-    // tool.
-    const double quantizedBeats = (naturalBeats > 4.0)
-        ? std::round (naturalBeats / 4.0) * 4.0
-        : getNoteValueBeats (nearestNoteValueIndex (naturalBeats));
+    // bars it actually spans. For those, decompose into whole bars plus a
+    // sub-bar remainder, and only run the (still fine-grained, unchanged)
+    // palette search on the remainder -- rounding the WHOLE length to the
+    // nearest bar (an earlier, cruder version of this fix) was accurate
+    // only by coincidence for lengths already near a whole-bar boundary,
+    // and crushed anything else (e.g. a 1.3-bar slice) down to a flat
+    // whole-bar count. The palette search itself remains exactly as
+    // before for anything within one bar to start with, where it was
+    // never broken.
+    double quantizedBeats;
+
+    if (naturalBeats > 4.0)
+    {
+        const double wholeBars = std::floor (naturalBeats / 4.0);
+        const double remainderBeats = naturalBeats - (wholeBars * 4.0);
+
+        // Below half the smallest palette entry (128n, index 0 -- the
+        // palette is sorted shortest to longest), treat as no remainder
+        // at all -- otherwise a slice that's already almost exactly N
+        // whole bars gets a spurious tiny addition tacked on for no
+        // audible reason.
+        const double smallestPaletteBeats = getNoteValueBeats (0);
+        const double quantizedRemainder = (remainderBeats > smallestPaletteBeats * 0.5)
+            ? getNoteValueBeats (nearestNoteValueIndex (remainderBeats))
+            : 0.0;
+
+        quantizedBeats = (wholeBars * 4.0) + quantizedRemainder;
+    }
+    else
+    {
+        quantizedBeats = getNoteValueBeats (nearestNoteValueIndex (naturalBeats));
+    }
 
     const double targetHostSeconds = quantizedBeats * (60.0 / hostBpm);
 
