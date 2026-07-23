@@ -372,6 +372,9 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     // Widened from 600 (Step 31) to give the waveform display significantly
     // more horizontal room for zoom/pan and the beat-number grid.
     setSize (900, 780);
+
+    if (processor.hasSample())
+        updateAfterSampleOrSliceChange();
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
