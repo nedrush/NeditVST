@@ -348,15 +348,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     if (hostBpm <= 0.0 || hostSampleRate <= 0.0)
         return;
 
-    const bool noSyncMode = (pitchMode.load() == PitchMode::noSync);
-
     // Repitch factor: how much faster/slower to play the source sample so
     // its `loopLengthBars` bars match the host's tempo. >1 = source is
     // slower than host (speed up to fit, pitch rises); <1 = source is
     // faster than host (slow down, pitch drops). Applies in both trigger
     // modes — it's purely a playback-speed/pitch thing, independent of
-    // when triggers happen. Unused in NoSync mode (see below), but still
-    // computed unconditionally — cheap, and keeps this block simple.
+    // when triggers happen.
     const double loopLengthQuarterNotes = (double) loopLengthBars.load() * 4.0; // assumes 4/4
     const double sourceSpanSeconds = computeSourceSpanSeconds();
     const double hostLoopLengthSeconds = loopLengthQuarterNotes * (60.0 / hostBpm);
@@ -364,16 +361,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                      ? (sourceSpanSeconds / hostLoopLengthSeconds)
                                      : 1.0;
 
-    // NoSync (Step 27): replaces the tempo-derived repitchRatio entirely
-    // with a simple transpose ratio -- pure sample-rate matching plus
-    // transpose, zero tempo math involved. No scheduling changes needed
-    // anywhere else: "pick finishes when currentPosition reaches
-    // currentEndSample" is already expressed in source-sample terms, so a
-    // NoSync pick naturally just plays until its content ends,
-    // disregarding the beat grid, the moment this rate is in place.
-    const double transposeRatio = std::pow (2.0, (double) transposeSemitones.load() / 12.0);
-    const double effectiveRepitchRatio = noSyncMode ? transposeRatio : repitchRatio;
-    const double playbackRate = (sampleSampleRate / hostSampleRate) * effectiveRepitchRatio;
+    const double playbackRate = (sampleSampleRate / hostSampleRate) * repitchRatio;
 
     const int sourceLength = sampleBuffer.getNumSamples();
     const int sourceChannels = sampleBuffer.getNumChannels();
@@ -706,12 +694,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // and consulted for the rest of this pick's life.
                 currentPickBeatQuantized = false;
 
-                // NoSync (Step 27) never quantizes, regardless of either
-                // toggle's state -- it has zero tempo math by design, and
-                // beat-quantizing would reintroduce exactly that.
-                const bool beatQuantizeWanted = noSyncMode ? false
-                                              : timeStretchMode ? beatQuantizeSliceLengthEnabled.load()
-                                                                : beatQuantizeSliceLengthEnabledRepitch.load();
+                const bool beatQuantizeWanted = timeStretchMode ? beatQuantizeSliceLengthEnabled.load()
+                                                                 : beatQuantizeSliceLengthEnabledRepitch.load();
 
                 if (beatQuantizeWanted
                     && (currentPlaybackStyle == PlaybackStyle::forward || pingPong)

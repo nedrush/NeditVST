@@ -96,20 +96,16 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     controlsContent.addAndMakeVisible (pitchModeSelector);
     pitchModeSelector.addItem ("Repitch", 1);
     pitchModeSelector.addItem ("Time-Stretch", 2);
-    pitchModeSelector.addItem ("NoSync", 3);
     {
         const auto currentMode = processor.getPitchMode();
-        const int selectedId = currentMode == SlicerAudioProcessor::PitchMode::timeStretch ? 2
-                              : currentMode == SlicerAudioProcessor::PitchMode::noSync ? 3
-                                                                                        : 1;
+        const int selectedId = currentMode == SlicerAudioProcessor::PitchMode::timeStretch ? 2 : 1;
         pitchModeSelector.setSelectedId (selectedId, juce::dontSendNotification);
     }
     pitchModeSelector.onChange = [this]
     {
         const int selectedId = pitchModeSelector.getSelectedId();
         const auto mode = selectedId == 2 ? SlicerAudioProcessor::PitchMode::timeStretch
-                         : selectedId == 3 ? SlicerAudioProcessor::PitchMode::noSync
-                                            : SlicerAudioProcessor::PitchMode::repitch;
+                                           : SlicerAudioProcessor::PitchMode::repitch;
         processor.setPitchMode (mode);
         updatePitchModeVisibility();
     };
@@ -119,20 +115,6 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     beatQuantizeToggleRepitch.onClick = [this]
     {
         processor.setBeatQuantizeSliceLengthEnabledRepitch (beatQuantizeToggleRepitch.getToggleState());
-    };
-
-    controlsContent.addAndMakeVisible (transposeLabel);
-    transposeLabel.setText ("Transpose (semitones)", juce::dontSendNotification);
-    transposeLabel.setJustificationType (juce::Justification::centredLeft);
-
-    controlsContent.addAndMakeVisible (transposeSlider);
-    transposeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    transposeSlider.setRange (-24.0, 24.0, 1.0);
-    transposeSlider.setValue (processor.getTransposeSemitones(), juce::dontSendNotification);
-    transposeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
-    transposeSlider.onValueChange = [this]
-    {
-        processor.setTransposeSemitones ((float) transposeSlider.getValue());
     };
 
     controlsContent.addAndMakeVisible (grainSizeLabel);
@@ -418,7 +400,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 35: Quantize detected transients to grid",
+    g.drawFittedText ("NeditVST — step 36: Remove NoSync pitch mode",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
     // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider
@@ -428,9 +410,9 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
     // offset) to get their real on-screen rectangle in THIS component's
     // coordinate space, so the highlight tracks correctly regardless of
     // scroll position. Clipped to the viewport's own bounds so nothing
-    // is drawn if the control is currently scrolled out of view, and
-    // skipped entirely while hidden (Pitch Mode == NoSync, which hides
-    // both — see updatePitchModeVisibility()).
+    // is drawn if the control is currently scrolled out of view; the
+    // isVisible() guard is defensive (nothing currently hides Loop Length)
+    // but stays cheap to keep either way.
     if (loopLengthNeedsAttention && loopLengthLabel.isVisible())
     {
         juce::Graphics::ScopedSaveState saveState (g);
@@ -516,11 +498,6 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     area.removeFromTop (10);
 
     beatQuantizeToggleRepitch.setBounds (area.removeFromTop (24));
-    area.removeFromTop (10);
-
-    auto transposeRow = area.removeFromTop (30);
-    transposeLabel.setBounds (transposeRow.removeFromLeft (140));
-    transposeSlider.setBounds (transposeRow);
     area.removeFromTop (10);
 
     auto grainSizeRow = area.removeFromTop (30);
@@ -717,7 +694,6 @@ void SlicerAudioProcessorEditor::updatePitchModeVisibility()
     const int selectedId = pitchModeSelector.getSelectedId();
     const bool repitch = selectedId == 1;
     const bool timeStretch = selectedId == 2;
-    const bool noSync = selectedId == 3;
 
     beatQuantizeToggleRepitch.setVisible (repitch);
 
@@ -728,17 +704,6 @@ void SlicerAudioProcessorEditor::updatePitchModeVisibility()
     beatQuantizeToggle.setVisible (timeStretch);
     pitchShiftLabel.setVisible (timeStretch);
     pitchShiftSlider.setVisible (timeStretch);
-
-    transposeLabel.setVisible (noSync);
-    transposeSlider.setVisible (noSync);
-
-    // NoSync has zero tempo math, so none of this applies there (Step 27)
-    // — trim markers and Audition, by contrast, stay available regardless
-    // of Pitch Mode (they live on/near the waveform, not in this section,
-    // so nothing to hide here for those).
-    loopLengthLabel.setVisible (! noSync);
-    loopLengthSlider.setVisible (! noSync);
-    calculatedBpmLabel.setVisible (! noSync);
 }
 
 void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()

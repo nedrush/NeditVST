@@ -621,24 +621,7 @@ public:
     //     native, sample-rate-corrected-only rate (pitch-preserving),
     //     while their START positions get spaced to track tempo, so pitch
     //     stays fixed regardless of speed.
-    //   noSync (Step 27) — no tempo math at all: replaces the tempo-derived
-    //     repitchRatio entirely with a simple transpose ratio
-    //     (pow(2, transposeSemitones/12)), so the final rate is pure
-    //     sample-rate matching plus transpose. No GranularStretcher
-    //     involvement for the base engine — that's specifically a
-    //     tempo-sync tool, not applicable here. Needs no scheduling
-    //     changes: "pick finishes when currentPosition reaches
-    //     currentEndSample" is already expressed in source-sample terms,
-    //     not host-beat terms, so a NoSync pick naturally just plays until
-    //     its content ends, disregarding the beat grid, the moment the
-    //     rate calculation above is in place — nothing else in the
-    //     render/scheduling path needs touching. Playback styles stay
-    //     fully compatible with no special-casing: Ping-Pong's folding,
-    //     Tape Stop's decel, and Stretch's forced-GranularStretcher
-    //     override all layer on top of whichever base rate the current
-    //     Pitch Mode produces, exactly as they already do for Repitch/
-    //     Time-Stretch — this was already orthogonal.
-    enum class PitchMode { repitch, timeStretch, noSync };
+    enum class PitchMode { repitch, timeStretch };
 
     void setPitchMode (PitchMode mode)
     {
@@ -647,14 +630,6 @@ public:
     }
 
     PitchMode getPitchMode() const { return pitchMode.load(); }
-
-    // NoSync-only transpose control (Step 27) — the ONLY thing that
-    // affects NoSync's playback rate (see PitchMode::noSync above). Same
-    // -24..+24 range as Time-Stretch's own pitch shift control, for
-    // consistency; 0 semitones is a no-op (transposeRatio == 1.0), same
-    // "identity by default" convention as pitchShiftSemitones below.
-    void setTransposeSemitones (float semitones) { transposeSemitones.store (juce::jlimit (-24.0f, 24.0f, semitones)); }
-    float getTransposeSemitones() const { return transposeSemitones.load(); }
 
     // Grain length for Time-Stretch mode. Overlap is fixed at 50% (not
     // exposed) to keep the UI minimal.
@@ -1110,11 +1085,6 @@ private:
     std::atomic<float> pitchShiftSemitones { 0.0f };
     std::atomic<bool> granularNeedsReseed { false };
     GranularStretcher granularStretcher;
-
-    // NoSync's own transpose control (Step 27) — separate from Time-
-    // Stretch's pitchShiftSemitones above, same as every other pitch-mode
-    // gets its own dedicated state rather than sharing one.
-    std::atomic<float> transposeSemitones { 0.0f };
 
     // Beat-quantized slice length (Step 24) — default ON, see the public
     // setter/getter's doc comment above for why that's correct here
