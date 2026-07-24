@@ -266,6 +266,16 @@ void WaveformDisplay::paint (juce::Graphics& g)
         if (hasPreview)
             continue; // don't draw a fader for a proposed-but-uncommitted layout
 
+        // Sequenced Trigger Mode (Step 37) never rolls the probability
+        // engine at all -- every hit is explicitly placed by the user on
+        // the sequencer grid instead -- so the fader would just be a
+        // stale, misleading leftover from whatever it last was in another
+        // mode. Same visibility-gating pattern as hiding Clock-only
+        // controls in Slice Length mode, just applied to painting here
+        // instead of a juce::Component's setVisible().
+        if (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::sequenced)
+            continue;
+
         // Probability fader: a translucent bar spanning this slice's full
         // width. Height is proportional to weight — empty at the bottom
         // (never picked), full height at the top (always picked, relative
