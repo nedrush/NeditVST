@@ -375,6 +375,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const double fadeOutSamplesRequested = (double) fadeOutMs.load() / 1000.0 * hostSampleRate;
 
     const bool clockMode = (triggerMode.load() == TriggerMode::clock);
+    const bool sequencedMode = (triggerMode.load() == TriggerMode::sequenced);
 
     // Time-Stretch (Step 17): grain scheduling derived from the same
     // playbackRate math above — a grain spawns every outputHopSamples
@@ -425,11 +426,36 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             clockModeInitialized = true;
         }
 
-        resetWindowInitialized = false; // Slice Length's reset-window state is meaningless here; re-entering Slice Length mode later starts fresh
+        resetWindowInitialized = false; // the other two modes' own init state is meaningless here; re-entering either later starts fresh
+        sequencedModeInitialized = false;
+    }
+    else if (sequencedMode)
+    {
+        clockModeInitialized = false;
+        resetWindowInitialized = false;
+
+        // Sequenced Trigger Mode (Step 37) — same "just entered / transport
+        // just started" treatment Clock mode gives itself above: force the
+        // very first per-sample check below to treat whichever step we're
+        // currently inside as new, so it triggers immediately rather than
+        // waiting for the next step boundary.
+        if (! sequencedModeInitialized)
+        {
+            sequencedLastStepIndex = -1;
+            sequencedModeInitialized = true;
+        }
+
+        // Defensive: every dimension-changing setter already calls
+        // resetSequencerGrid() under this same lock, so this should never
+        // actually be needed, but self-heal rather than risk an
+        // out-of-bounds read below if that invariant is ever violated.
+        if ((int) sequencerGrid.size() != getSequencerNumRows() * getSequencerNumSteps())
+            resetSequencerGrid();
     }
     else
     {
         clockModeInitialized = false; // so re-entering Clock mode later starts fresh
+        sequencedModeInitialized = false;
 
         // Slice Length periodic reset (Step 34) — same "just entered /
         // transport just started, snap to the current window and force an
@@ -596,6 +622,124 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     const double subdivisionBeats = getNoteValueBeats (clockCurrentSubdivisionIndex);
                     nextTickPpq += juce::jmax (subdivisionBeats, 1.0e-6); // guard against a zero-length tick
                     nextTickPpq = juce::jmin (nextTickPpq, windowEndPpq);
+                }
+            }
+        }
+        else if (sequencedMode)
+        {
+            // Sequenced Trigger Mode (Step 37): checked every SAMPLE, not
+            // once per block -- same per-sample discipline (and same
+            // reason) as Clock mode's own tick/window checks and the
+            // mandatory Reset feature's boundary check, avoiding the exact
+            // bug Step 6 introduced and fixed (a boundary computed once per
+            // block from the block's start position silently misses
+            // boundaries landing mid-block).
+            const double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
+            const int totalSteps = getSequencerNumSteps();
+
+            if (stepBeats > 0.0 && totalSteps > 0)
+            {
+                const juce::int64 absoluteStepIndex = (juce::int64) std::floor (samplePpq / stepBeats);
+                const int currentStepIndex = (int) (((absoluteStepIndex % totalSteps) + totalSteps) % totalSteps);
+
+                if (currentStepIndex != sequencedLastStepIndex)
+                {
+                    sequencedLastStepIndex = currentStepIndex;
+                    currentlyPlayingStepIndexForUI.store (currentStepIndex);
+
+                    const int numRows = getSequencerNumRows();
+                    int activeRow = -1;
+
+                    for (int row = 0; row < numRows; ++row)
+                    {
+                        if (sequencerGrid[(size_t) (row * totalSteps + currentStepIndex)])
+                        {
+                            activeRow = row;
+                            break;
+                        }
+                    }
+
+                    // Structural monophony (Step 37) guarantees at most one
+                    // active row per column -- if none is active here,
+                    // there's nothing new to trigger; whatever's currently
+                    // playing (or silence) just continues per its own
+                    // existing completion logic below, same as Clock mode
+                    // already does between ticks.
+                    if (activeRow >= 0 && activeRow < (int) slices.size())
+                    {
+                        // Reuse the exact same single-voice render path
+                        // every other mode already uses -- force a fresh
+                        // start regardless of what's currently playing,
+                        // same mechanic already proven in Clock mode's
+                        // tick-retriggering and the mandatory Reset
+                        // feature. Every Sequenced note plays as
+                        // PlaybackStyle::forward unconditionally --
+                        // playback-style-per-step is explicitly deferred
+                        // past v1, and the whole point of this mode is
+                        // that nothing here is randomized.
+                        const auto& slice = slices[(size_t) activeRow];
+                        currentPlaybackStyle = PlaybackStyle::forward;
+                        currentSliceStartSample = slice.startSample;
+                        currentSliceLength = slice.endSample - slice.startSample;
+                        currentPosition = (double) slice.startSample;
+                        currentEndSample = slice.endSample;
+                        hasCurrentPick = true;
+                        pickJustStarted = true;
+                        currentlyPlayingSliceIndexForUI.store (activeRow);
+
+                        // Sequenced mode's own step grid already enforces
+                        // beat-alignment for SCHEDULING (every note starts
+                        // exactly on a step boundary already) -- same
+                        // reasoning Clock mode already uses to exclude
+                        // Beat-Quantize (Step 24/26), which is about
+                        // DURATION, not start time, and would be redundant
+                        // here rather than serve any purpose.
+                        currentPickBeatQuantized = false;
+
+                        samplesSincePickStart = 0.0;
+                        const double naturalLengthHostSamples =
+                            (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
+                        currentPickMidpointHostSamples = naturalLengthHostSamples; // unused (Forward-only here), harmless
+                        currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless -- same "set unconditionally" convention used elsewhere
+
+                        // Anticipatory fade (Step 37): cap this note's
+                        // length to whichever comes first -- its own
+                        // natural length, or the NEXT scheduled active step
+                        // anywhere in the grid (structural monophony means
+                        // that step, whenever it comes, WILL cut this note
+                        // off) -- same established anticipatory-fade
+                        // pattern already used for Clock's ticks, Tape
+                        // Stop, Filter Sweep, and the mandatory Reset
+                        // feature. A bounded forward scan (at most
+                        // totalSteps * numRows checks), run once per NOTE
+                        // START, not per sample.
+                        int stepsUntilNextActive = totalSteps;
+
+                        for (int offset = 1; offset <= totalSteps; ++offset)
+                        {
+                            const int checkColumn = (currentStepIndex + offset) % totalSteps;
+                            bool columnHasActive = false;
+
+                            for (int row2 = 0; row2 < numRows; ++row2)
+                            {
+                                if (sequencerGrid[(size_t) (row2 * totalSteps + checkColumn)])
+                                {
+                                    columnHasActive = true;
+                                    break;
+                                }
+                            }
+
+                            if (columnHasActive)
+                            {
+                                stepsUntilNextActive = offset;
+                                break;
+                            }
+                        }
+
+                        const double samplesUntilNextActiveStep =
+                            (double) stepsUntilNextActive * stepBeats * (60.0 / hostBpm) * hostSampleRate;
+                        currentPickLengthInHostSamples = juce::jmin (naturalLengthHostSamples, samplesUntilNextActiveStep);
+                    }
                 }
             }
         }
@@ -1149,6 +1293,7 @@ void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sens
 
     slices = mergeOnsetsIntoSlices (autoSlices, trimStart, trimEnd);
     sliceProbabilities.assign (slices.size(), 1.0f); // default: even odds across all slices
+    resetSequencerGrid(); // Step 37 -- row count just changed
     hasCurrentPick = false; // boundaries changed — force a fresh pick
     clockModeInitialized = false;
     clockCurrentPickValid = false;
@@ -1264,6 +1409,54 @@ int SlicerAudioProcessor::quantizeOnsetToGrid (int onsetSample, int trimStart, i
     // addManualSlicePoint()/setTrimStartSample() etc. already use for
     // exactly this reason.
     return juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), (int) std::llround (quantizedSampleDouble));
+}
+
+void SlicerAudioProcessor::resetSequencerGrid()
+{
+    const int rows = getSequencerNumRows();
+    const int columns = getSequencerNumSteps();
+    sequencerGrid.assign ((size_t) juce::jmax (0, rows * columns), false);
+}
+
+bool SlicerAudioProcessor::getSequencerCell (int row, int column) const
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
+        return false;
+
+    const size_t idx = (size_t) (row * columns + column);
+    return idx < sequencerGrid.size() && sequencerGrid[idx];
+}
+
+void SlicerAudioProcessor::setSequencerCell (int row, int column, bool active)
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int rows = getSequencerNumRows();
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= rows || column < 0 || column >= columns)
+        return;
+
+    if ((int) sequencerGrid.size() != rows * columns)
+        resetSequencerGrid(); // defensive -- dimensions drifted out from under us somehow
+
+    if (active)
+    {
+        // Structural monophony (Step 37, v1): clear any other active cell
+        // in this SAME COLUMN across every row first, so "only one voice"
+        // is true at the INPUT level the instant a pattern is drawn, not
+        // just something the playback engine happens to enforce
+        // afterward -- and it's what avoids needing a tie-break rule
+        // entirely at playback time.
+        for (int r = 0; r < rows; ++r)
+            sequencerGrid[(size_t) (r * columns + column)] = false;
+    }
+
+    sequencerGrid[(size_t) (row * columns + column)] = active;
 }
 
 int SlicerAudioProcessor::addManualSlicePoint (int targetSample, bool snapToTransient)

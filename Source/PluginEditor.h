@@ -5,9 +5,10 @@
 #include "WaveformDisplay.h"
 #include "SubdivisionProbabilityGrid.h"
 #include "PlaybackStyleGrid.h"
+#include "SequencerGrid.h"
 
 //==============================================================================
-/** Step-36 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-37 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -63,7 +64,15 @@
     "Quantize transients" toggle (Step 35) plus a Grid note-value dropdown
     (visible only while the toggle is on) snaps auto-detected transients —
     never manual points — onto the selected grid, correcting the noisy
-    detection input at the root of most of this session's bugs. */
+    detection input at the root of most of this session's bugs. Trigger
+    mode gained a third value, Sequenced (Step 37, v1, monophonic): a
+    mouse-drawable step-sequencer grid (one row per available slice, one
+    column per step at the chosen Step resolution) replaces the Clock-only
+    controls, the mandatory Reset selector, and the Playback Style grid
+    entirely in that mode -- structural monophony is enforced at the
+    drawing level, and each active cell renders as a piano-roll bar
+    spanning its slice's natural length, cut short by whatever the grid's
+    own monophony will actually cut it off at during playback. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -190,9 +199,11 @@ private:
     juce::Label triggerModeLabel;
     juce::ComboBox triggerModeSelector; // "Slice Length" / "Clock"
 
-    // Playback style (Step 19/21) — visible in BOTH trigger modes, unlike
-    // the Clock-only controls below: it's rolled once per pick in Slice
-    // Length mode too, not just once per Clock window.
+    // Playback style (Step 19/21) — visible in both Slice Length and Clock
+    // modes, unlike the Clock-only controls below: it's rolled once per
+    // pick in Slice Length mode too, not just once per Clock window.
+    // Hidden in Sequenced mode (Step 37) — deliberately deferred there,
+    // see SequencerGrid's doc comment.
     juce::Label playbackStyleLabel;
     PlaybackStyleGrid playbackStyleGrid;
 
@@ -225,6 +236,20 @@ private:
 
     juce::Label subdivisionTableLabel;
     SubdivisionProbabilityGrid subdivisionGrid;
+
+    // Sequenced trigger mode (Step 37, v1 -- monophonic) — Sequenced-only,
+    // same reserved-space/hide pattern as the Clock-only and Slice-Length-
+    // only groups above. Step resolution reuses the same 20-value
+    // note-value palette as Clock reference/Beat-quantize/Quantize Grid.
+    // sequencerGrid is self-sizing (see its own doc comment) and can be
+    // wider/taller than controlsContent, so it lives inside its own
+    // nested Viewport, same pattern as controlsViewport/controlsContent
+    // itself.
+    juce::Label stepResolutionLabel;
+    juce::ComboBox stepResolutionSelector;
+    juce::Viewport sequencerViewport;
+    SequencerGrid sequencerGrid;
+    static constexpr int sequencerViewportHeight = 200;
 
     // Zoom/pan (Step 31) — live directly on the editor (like waveformDisplay
     // itself), not inside controlsContent, so they stay visible next to the

@@ -340,7 +340,18 @@ public:
     // How many bars (assumed 4/4) the loaded sample represents. This is
     // what lets us calculate the sample's original tempo and therefore how
     // much to repitch it to match the host.
-    void setLoopLengthBars (int bars) { loopLengthBars.store (juce::jmax (1, bars)); }
+    void setLoopLengthBars (int bars)
+    {
+        loopLengthBars.store (juce::jmax (1, bars));
+
+        // Sequenced Trigger Mode (Step 37): column count is derived from
+        // loopLengthBars, so any change here invalidates the existing
+        // pattern's meaning -- same "reset on rebuild" convention
+        // sliceProbabilities already uses.
+        const juce::ScopedLock sl (sampleLock);
+        resetSequencerGrid();
+    }
+
     int getLoopLengthBars() const { return loopLengthBars.load(); }
 
     //=== Manual BPM override (Step 23) ===
@@ -418,8 +429,8 @@ public:
     void setFadeOutMs (float ms) { fadeOutMs.store (juce::jmax (0.0f, ms)); }
     float getFadeOutMs() const { return fadeOutMs.load(); }
 
-    //=== Trigger mode (Step 14) ===
-    // Two mutually exclusive ways to decide when the next slice-pick
+    //=== Trigger mode (Step 14/37) ===
+    // Three mutually exclusive ways to decide when the next slice-pick
     // happens:
     //   sliceLength — today's behaviour, unchanged: the picked slice plays
     //     in full at its own length, and finishing IS the cue to pick again.
@@ -430,7 +441,13 @@ public:
     //     regardless of the slice's own natural length (cut short if
     //     longer than the tick, trails into silence if shorter). A new
     //     window always picks fresh.
-    enum class TriggerMode { sliceLength, clock };
+    //   sequenced (Step 37, v1 -- monophonic) — nothing here is randomized;
+    //     everything is explicitly placed by the user on a step grid (see
+    //     the Sequenced Trigger Mode section below). The entire probability
+    //     engine (per-slice weights, playback style table, subdivision
+    //     table) sits unused while this mode is active, same as it already
+    //     does for whichever OTHER mode's features don't apply to it.
+    enum class TriggerMode { sliceLength, clock, sequenced };
 
     void setTriggerMode (TriggerMode mode)
     {
@@ -438,6 +455,7 @@ public:
         clockModeInitialized = false; // force a fresh window/pick on next block
         clockCurrentPickValid = false;
         resetWindowInitialized = false; // Step 34 -- same "start fresh, aligned" guarantee entering Slice Length mode
+        sequencedModeInitialized = false; // Step 37 -- same guarantee entering Sequenced mode
     }
 
     TriggerMode getTriggerMode() const { return triggerMode.load(); }
@@ -722,6 +740,90 @@ public:
     void setBeatQuantizeSliceLengthEnabledRepitch (bool enabled) { beatQuantizeSliceLengthEnabledRepitch.store (enabled); }
     bool getBeatQuantizeSliceLengthEnabledRepitch() const { return beatQuantizeSliceLengthEnabledRepitch.load(); }
 
+    //=== Sequenced Trigger Mode (Step 37, v1 -- monophonic) ===
+    // A mouse-drawable step grid: rows are available slices, columns are
+    // steps. Structural monophony is enforced at the INPUT level (see
+    // setSequencerCell() below), not just at playback -- only one cell may
+    // be active per column across the whole grid, so activating a cell in
+    // one row automatically clears any active cell elsewhere in that same
+    // column. That's what keeps "the whole sequencer shares one voice"
+    // true and unambiguous from the moment a pattern is being drawn, not
+    // just something the playback engine happens to guarantee afterward,
+    // and it's also what avoids needing a tie-break rule entirely.
+    //
+    // Grid dimensions:
+    //   rows -- one per available slice (auto-detected + manual, pooled
+    //     from the existing `slices` list, same source everything else
+    //     already reads), capped at numSequencerRows (32). If more than 32
+    //     slices exist, only the first 32 in time-order are representable
+    //     -- a known v1 limitation, not solved here.
+    //   columns ("steps") -- loopLengthBars * 4 * stepsPerBeat, where
+    //     stepsPerBeat comes from the Step resolution dropdown (reusing
+    //     the existing note-value palette directly -- e.g. selecting 16th
+    //     notes gives 4 steps per beat; 2 bars at 16th notes = 32 steps).
+    //
+    // The pattern is reset to all-off whenever either dimension changes
+    // (slices rebuild, loop length changes, or step resolution changes)
+    // -- there's no way to meaningfully preserve a 2D pattern across a
+    // dimension change, and this matches the same "reset to a sane
+    // default whenever the underlying structure changes" convention
+    // sliceProbabilities already uses on every redetection.
+    //
+    // See processBlock() for the playback side: it reuses the exact same
+    // currentPosition/currentEndSample/hasCurrentPick single-voice render
+    // path every other mode already uses -- the only new logic is
+    // scheduling (track host ppq, same pattern as Clock mode; determine
+    // the current step; when a NEW active step is reached, immediately
+    // set currentPosition/currentEndSample to that row's slice, same
+    // "force a fresh start regardless of what's currently playing"
+    // mechanic already proven in Clock mode's tick-retriggering and the
+    // mandatory Reset feature). Every note plays as PlaybackStyle::forward
+    // unconditionally -- playback-style-per-step is explicitly deferred
+    // past v1, along with polyphony and more than 32 rows.
+    static constexpr int numSequencerRows = 32;
+
+    // Defensive cap purely for UI/performance sanity at extreme parameter
+    // combinations (e.g. 8 bars at 128th notes would otherwise be 1024
+    // columns) -- same "known v1 limitation" spirit as the row cap above,
+    // just applied symmetrically to columns.
+    static constexpr int maxSequencerColumns = 256;
+
+    int getSequencerNumRows() const { return juce::jmin (numSequencerRows, (int) slices.size()); }
+
+    int getSequencerNumSteps() const
+    {
+        const double gridBeats = getNoteValueBeats (stepResolutionIndex.load());
+        const double stepsPerBeat = (gridBeats > 0.0) ? (1.0 / gridBeats) : 1.0;
+        const int rawSteps = juce::roundToInt ((double) loopLengthBars.load() * 4.0 * stepsPerBeat);
+        return juce::jlimit (1, maxSequencerColumns, rawSteps);
+    }
+
+    // Step resolution -- reuses the same 20-value note-value palette as
+    // Clock reference/Quantize Transients' Grid, rather than a separate
+    // table. Defaults to index 7 (16n / a sixteenth note), matching the
+    // spec's own worked example (16th notes -> 4 steps per beat).
+    void setStepResolutionIndex (int index)
+    {
+        stepResolutionIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        const juce::ScopedLock sl (sampleLock);
+        resetSequencerGrid(); // column count just changed
+    }
+
+    int getStepResolutionIndex() const { return stepResolutionIndex.load(); }
+
+    // Cell state. row/column outside the current grid dimensions are
+    // silently ignored (defensive -- the UI should never ask for an
+    // out-of-range cell, but dimensions can shift between a mouse event
+    // being queued and processed).
+    bool getSequencerCell (int row, int column) const;
+    void setSequencerCell (int row, int column, bool active);
+
+    // Lock-free copy of the currently active step column, for the UI's
+    // playhead indicator on the sequencer grid -- same pattern as
+    // currentlyPlayingSliceIndexForUI/the Audition playhead. -1 when
+    // Sequenced mode isn't active (or transport stopped).
+    int getCurrentlyPlayingStepIndex() const { return currentlyPlayingStepIndexForUI.load(); }
+
 private:
     // Weighted-random pick across a list of weights. Falls back to
     // uniform-random if every weight is 0 (rather than picking nothing
@@ -834,6 +936,13 @@ private:
     // Clamped into [trimStart, trimEnd) afterward so an onset near the
     // very edge of the trim can never quantize to a position outside it.
     int quantizeOnsetToGrid (int onsetSample, int trimStart, int trimEnd) const;
+
+    // Sequenced Trigger Mode (Step 37) -- clears the pattern to all-off,
+    // sized to the CURRENT grid dimensions (getSequencerNumRows()/
+    // getSequencerNumSteps()). Called whenever either dimension changes:
+    // slices rebuild (rows), or loop length/step resolution change
+    // (columns). Must be called with sampleLock already held.
+    void resetSequencerGrid();
 
     // Unifies the tempo math (Step 23) that both Trim markers and Manual
     // BPM override feed into:
@@ -956,6 +1065,17 @@ private:
     // this isn't optional.
     std::atomic<int> resetBarsIndex { 2 };
 
+    // Sequenced Trigger Mode (Step 37) -- stepResolutionIndex indexes the
+    // same note-value palette as clockReferenceIndex/quantizeGridIndex.
+    // sequencerGrid is the pattern itself: flat-indexed as
+    // row*getSequencerNumSteps()+column, resized (and reset to all-off)
+    // by resetSequencerGrid() whenever either dimension changes. Guarded
+    // by sampleLock, same as slices/manualPoints -- read on the audio
+    // thread every sample Sequenced mode is active, written from the UI
+    // thread on every mouse-drawn cell.
+    std::atomic<int> stepResolutionIndex { 7 }; // default: 16n (a sixteenth note)
+    std::vector<bool> sequencerGrid;
+
     // Stretch (Step 22) character parameters — deliberately fixed, not
     // exposed in the UI (separate from Pitch Mode's user-facing grain
     // size/window shape/pitch shift controls, none of which apply here).
@@ -1008,6 +1128,24 @@ private:
     // newWindow check directly rather than re-deriving that logic.
     bool resetWindowInitialized = false;
     double resetWindowEndPpq = 0.0;
+
+    // Sequenced Trigger Mode (Step 37, audio thread only) --
+    // sequencedModeInitialized false forces the very first per-sample
+    // check on next block to treat the current step as new (transport
+    // start, or entering Sequenced mode), same "always start aligned"
+    // guarantee clockModeInitialized/resetWindowInitialized already give
+    // their own modes. sequencedLastStepIndex is what that per-sample
+    // check compares against to detect a genuine step-boundary crossing
+    // -- -1 is never a valid step index, so it always counts as "new" the
+    // first time.
+    bool sequencedModeInitialized = false;
+    int sequencedLastStepIndex = -1;
+
+    // Lock-free copy of the currently active step column (Step 37),
+    // written by the audio thread every time a new step boundary is
+    // reached, read by the UI thread for the sequencer grid's playhead
+    // indicator -- same pattern as currentlyPlayingSliceIndexForUI below.
+    std::atomic<int> currentlyPlayingStepIndexForUI { -1 };
 
     // Filter Sweep's Whole Window scope (Step 30) — how far into the
     // CURRENT WINDOW we are, in host samples, as opposed to samplesSince-

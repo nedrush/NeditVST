@@ -2,7 +2,7 @@
 #include "PluginEditor.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p)
+    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), sequencerGrid (p)
 {
     addAndMakeVisible (controlsViewport);
     controlsViewport.setViewedComponent (&controlsContent, false); // we own it, don't let the viewport delete it
@@ -262,13 +262,21 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     controlsContent.addAndMakeVisible (triggerModeSelector);
     triggerModeSelector.addItem ("Slice Length", 1);
     triggerModeSelector.addItem ("Clock", 2);
-    triggerModeSelector.setSelectedId (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::clock ? 2 : 1,
-                                        juce::dontSendNotification);
+    triggerModeSelector.addItem ("Sequenced", 3);
+    {
+        const auto currentMode = processor.getTriggerMode();
+        const int selectedId = currentMode == SlicerAudioProcessor::TriggerMode::clock ? 2
+                              : currentMode == SlicerAudioProcessor::TriggerMode::sequenced ? 3
+                                                                                             : 1;
+        triggerModeSelector.setSelectedId (selectedId, juce::dontSendNotification);
+    }
     triggerModeSelector.onChange = [this]
     {
-        const bool clock = triggerModeSelector.getSelectedId() == 2;
-        processor.setTriggerMode (clock ? SlicerAudioProcessor::TriggerMode::clock
-                                         : SlicerAudioProcessor::TriggerMode::sliceLength);
+        const int selectedId = triggerModeSelector.getSelectedId();
+        const auto mode = selectedId == 2 ? SlicerAudioProcessor::TriggerMode::clock
+                         : selectedId == 3 ? SlicerAudioProcessor::TriggerMode::sequenced
+                                            : SlicerAudioProcessor::TriggerMode::sliceLength;
+        processor.setTriggerMode (mode);
         updateTriggerModeVisibility();
     };
 
@@ -342,6 +350,23 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (subdivisionGrid);
 
+    controlsContent.addAndMakeVisible (stepResolutionLabel);
+    stepResolutionLabel.setText ("Step resolution", juce::dontSendNotification);
+    stepResolutionLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (stepResolutionSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
+        stepResolutionSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    stepResolutionSelector.setSelectedId (processor.getStepResolutionIndex() + 1, juce::dontSendNotification);
+    stepResolutionSelector.onChange = [this]
+    {
+        processor.setStepResolutionIndex (stepResolutionSelector.getSelectedId() - 1);
+    };
+
+    controlsContent.addAndMakeVisible (sequencerViewport);
+    sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
+    sequencerViewport.setScrollBarsShown (true, true);
+
     updateTriggerModeVisibility();
     updatePitchModeVisibility();
     updateManualBpmOverrideVisibility();
@@ -400,7 +425,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 36: Remove NoSync pitch mode",
+    g.drawFittedText ("NeditVST — step 37: Sequenced Trigger Mode (v1, monophonic)",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
     // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider
@@ -574,6 +599,14 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     subdivisionGrid.setBounds (area.removeFromTop (SubdivisionProbabilityGrid::getPreferredHeight()));
     area.removeFromTop (20);
 
+    auto stepResolutionRow = area.removeFromTop (30);
+    stepResolutionLabel.setBounds (stepResolutionRow.removeFromLeft (140));
+    stepResolutionSelector.setBounds (stepResolutionRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    sequencerViewport.setBounds (area.removeFromTop (sequencerViewportHeight));
+    area.removeFromTop (20);
+
     auto undoRedoRow = area.removeFromTop (30);
     undoButton.setBounds (undoRedoRow.removeFromLeft (100));
     undoRedoRow.removeFromLeft (10);
@@ -655,7 +688,10 @@ void SlicerAudioProcessorEditor::chooseAndLoadFile()
 
 void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
 {
-    const bool clock = triggerModeSelector.getSelectedId() == 2;
+    const int selectedId = triggerModeSelector.getSelectedId();
+    const bool sliceLength = selectedId == 1;
+    const bool clock = selectedId == 2;
+    const bool sequenced = selectedId == 3;
 
     clockReferenceLabel.setVisible (clock);
     clockReferenceSelector.setVisible (clock);
@@ -666,11 +702,23 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     subdivisionTableLabel.setVisible (clock);
     subdivisionGrid.setVisible (clock);
 
-    // Reset every (Step 34) — the mirror image of the Clock-only controls
-    // above: Slice Length mode only, since Clock mode already has its own
-    // window-boundary mechanism and doesn't need this at all.
-    resetEveryLabel.setVisible (! clock);
-    resetEverySelector.setVisible (! clock);
+    // Reset every (Step 34) — Slice Length mode only, since Clock mode
+    // already has its own window-boundary mechanism and Sequenced mode's
+    // step scheduling is host-ppq-driven the same way, needing no separate
+    // periodic resync.
+    resetEveryLabel.setVisible (sliceLength);
+    resetEverySelector.setVisible (sliceLength);
+
+    // Playback style (Step 37) — hidden in Sequenced mode; the sequencer
+    // grid replaces it entirely there (each row is a fixed slice, played
+    // forward, no per-pick style roll).
+    playbackStyleLabel.setVisible (! sequenced);
+    playbackStyleGrid.setVisible (! sequenced);
+
+    // Sequenced-only controls (Step 37).
+    stepResolutionLabel.setVisible (sequenced);
+    stepResolutionSelector.setVisible (sequenced);
+    sequencerViewport.setVisible (sequenced);
 }
 
 void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()
