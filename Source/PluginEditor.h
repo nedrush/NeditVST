@@ -8,7 +8,7 @@
 #include "SequencerGrid.h"
 
 //==============================================================================
-/** Step-37 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-38 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -72,7 +72,17 @@
     entirely in that mode -- structural monophony is enforced at the
     drawing level, and each active cell renders as a piano-roll bar
     spanning its slice's natural length, cut short by whatever the grid's
-    own monophony will actually cut it off at during playback. */
+    own monophony will actually cut it off at during playback. Row 0
+    renders at the BOTTOM of the grid (Step 38, standard piano-roll
+    convention), the grid's width always matches WaveformDisplay's, a
+    Pattern length (bars) dropdown (1/2/4, separate from Loop length,
+    which only feeds the loaded audio's tempo calculation) sets the column
+    count, and a Randomize Sequence button fills the pattern with
+    constraint-aware random hits (each row's own slice length excludes
+    where a next hit in that row may land). Every juce::Slider in this
+    editor has scroll-wheel input disabled, so scrolling controlsViewport
+    with the cursor over a slider scrolls the view instead of nudging the
+    slider's value. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -247,6 +257,17 @@ private:
     // itself.
     juce::Label stepResolutionLabel;
     juce::ComboBox stepResolutionSelector;
+
+    // Pattern length (Step 38) -- 1/2/4 bars, deliberately separate from
+    // Loop length (bars): that control feeds the loaded audio's tempo
+    // calculation and has no reason to match how many bars the drawn
+    // pattern spans. Same dropdown-reusing-a-static-name-table pattern as
+    // Reset every.
+    juce::Label patternLengthLabel;
+    juce::ComboBox patternLengthSelector;
+
+    juce::TextButton randomizeSequenceButton { "Randomize Sequence" };
+
     juce::Viewport sequencerViewport;
     SequencerGrid sequencerGrid;
     static constexpr int sequencerViewportHeight = 200;

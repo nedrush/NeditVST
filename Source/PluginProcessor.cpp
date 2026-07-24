@@ -101,6 +101,14 @@ namespace
         "1 bar", "2 bars", "4 bars", "8 bars"
     } };
     const std::array<int, SlicerAudioProcessor::numResetBarsOptions> resetBarsValues { { 1, 2, 4, 8 } };
+
+    // Sequenced mode's Pattern length (Step 38) -- same parallel-array
+    // pattern as the reset-bars pair above, deliberately capped at 4 bars
+    // (not 8) per spec.
+    const std::array<const char*, SlicerAudioProcessor::numPatternLengthBarsOptions> patternLengthBarsNames { {
+        "1 bar", "2 bars", "4 bars"
+    } };
+    const std::array<int, SlicerAudioProcessor::numPatternLengthBarsOptions> patternLengthBarsValues { { 1, 2, 4 } };
 }
 
 juce::String SlicerAudioProcessor::getPlaybackStyleName (int index)
@@ -141,6 +149,22 @@ int SlicerAudioProcessor::getResetBarsValue (int index)
         return 4; // matches the default index (2 -> 4 bars)
 
     return resetBarsValues[(size_t) index];
+}
+
+juce::String SlicerAudioProcessor::getPatternLengthBarsName (int index)
+{
+    if (index < 0 || index >= numPatternLengthBarsOptions)
+        return {};
+
+    return patternLengthBarsNames[(size_t) index];
+}
+
+int SlicerAudioProcessor::getPatternLengthBarsValue (int index)
+{
+    if (index < 0 || index >= numPatternLengthBarsOptions)
+        return 1; // matches the default index (0 -> 1 bar)
+
+    return patternLengthBarsValues[(size_t) index];
 }
 
 juce::String SlicerAudioProcessor::getNoteValueName (int index)
@@ -1457,6 +1481,69 @@ void SlicerAudioProcessor::setSequencerCell (int row, int column, bool active)
     }
 
     sequencerGrid[(size_t) (row * columns + column)] = active;
+}
+
+void SlicerAudioProcessor::randomizeSequence()
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int rows = getSequencerNumRows();
+    const int columns = getSequencerNumSteps();
+
+    if ((int) sequencerGrid.size() != rows * columns)
+        resetSequencerGrid();
+
+    std::fill (sequencerGrid.begin(), sequencerGrid.end(), false);
+
+    if (rows <= 0 || columns <= 0)
+        return;
+
+    const double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
+    const double originalBpm = getCalculatedOriginalBpm();
+
+    for (int row = 0; row < rows; ++row)
+    {
+        const auto& slice = slices[(size_t) row];
+        const int sliceLength = slice.endSample - slice.startSample;
+
+        // Same natural-length-in-steps math SequencerGrid's piano-roll bar
+        // uses, computed here directly since randomization needs it as a
+        // per-row placement constraint, not just a rendering hint.
+        int naturalSteps = 1;
+
+        if (sliceLength > 0 && sampleSampleRate > 0.0 && stepBeats > 0.0 && originalBpm > 0.0)
+        {
+            const double sliceSeconds = (double) sliceLength / sampleSampleRate;
+            const double naturalBeats = sliceSeconds * (originalBpm / 60.0);
+            naturalSteps = juce::jmax (1, juce::roundToInt (naturalBeats / stepBeats));
+        }
+
+        // Walk the row left to right; at each free column, flip a coin to
+        // place a hit. If placed, skip ahead by this row's own natural
+        // length so the next candidate column can't land inside where
+        // this hit would still be ringing out -- the exclusion zone the
+        // spec calls for. Cross-row column conflicts (a different row
+        // wanting the same column) are left to the same structural-
+        // monophony clear setSequencerCell() itself uses -- whichever row
+        // reaches a column last simply wins it, same as manual drawing.
+        int column = 0;
+
+        while (column < columns)
+        {
+            if (random.nextFloat() < 0.35f)
+            {
+                for (int r = 0; r < rows; ++r)
+                    sequencerGrid[(size_t) (r * columns + column)] = false;
+
+                sequencerGrid[(size_t) (row * columns + column)] = true;
+                column += naturalSteps;
+            }
+            else
+            {
+                ++column;
+            }
+        }
+    }
 }
 
 int SlicerAudioProcessor::addManualSlicePoint (int targetSample, bool snapToTransient)

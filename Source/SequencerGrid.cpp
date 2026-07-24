@@ -5,23 +5,45 @@ SequencerGrid::SequencerGrid (SlicerAudioProcessor& processorToUse)
 {
     lastKnownNumRows = processor.getSequencerNumRows();
     lastKnownNumColumns = processor.getSequencerNumSteps();
-    setSize (juce::jmax (1, lastKnownNumColumns * columnWidth), juce::jmax (1, lastKnownNumRows * rowHeight));
+    lastKnownTargetWidth = targetWidth;
+    setSize (juce::jmax (1, targetWidth), juce::jmax (1, lastKnownNumRows * rowHeight));
 
     startTimerHz (30); // same live-update cadence WaveformDisplay's own timer already uses
 }
 
-void SequencerGrid::timerCallback()
+void SequencerGrid::setTargetWidth (int width)
+{
+    targetWidth = juce::jmax (1, width);
+    updateSizeIfNeeded();
+}
+
+void SequencerGrid::updateSizeIfNeeded()
 {
     const int numRows = processor.getSequencerNumRows();
     const int numColumns = processor.getSequencerNumSteps();
 
-    if (numRows != lastKnownNumRows || numColumns != lastKnownNumColumns)
+    if (numRows != lastKnownNumRows || numColumns != lastKnownNumColumns || targetWidth != lastKnownTargetWidth)
     {
         lastKnownNumRows = numRows;
         lastKnownNumColumns = numColumns;
-        setSize (juce::jmax (1, numColumns * columnWidth), juce::jmax (1, numRows * rowHeight));
+        lastKnownTargetWidth = targetWidth;
+        setSize (juce::jmax (1, targetWidth), juce::jmax (1, numRows * rowHeight));
     }
+}
 
+int SequencerGrid::getColumnWidth() const
+{
+    const int numColumns = processor.getSequencerNumSteps();
+
+    if (numColumns <= 0)
+        return targetWidth;
+
+    return juce::jmax (minColumnWidth, targetWidth / numColumns);
+}
+
+void SequencerGrid::timerCallback()
+{
+    updateSizeIfNeeded();
     repaint(); // cheap enough at this grid's typical size to just always repaint, same as WaveformDisplay's own timer
 }
 
@@ -32,7 +54,12 @@ int SequencerGrid::getRowIndexAtY (int y) const
     if (numRows <= 0)
         return 0;
 
-    return juce::jlimit (0, numRows - 1, y / rowHeight);
+    // Row 0 (the first slice) renders at the BOTTOM of the grid (Step 38,
+    // standard piano-roll convention -- see the class doc comment), so the
+    // screen row read from y has to be inverted to get back to the data
+    // row index processor.getSequencerCell()/setSequencerCell() expect.
+    const int screenRow = juce::jlimit (0, numRows - 1, y / rowHeight);
+    return numRows - 1 - screenRow;
 }
 
 int SequencerGrid::getColumnIndexAtX (int x) const
@@ -42,7 +69,7 @@ int SequencerGrid::getColumnIndexAtX (int x) const
     if (numColumns <= 0)
         return 0;
 
-    return juce::jlimit (0, numColumns - 1, x / columnWidth);
+    return juce::jlimit (0, numColumns - 1, x / getColumnWidth());
 }
 
 int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRows, int numColumns) const
@@ -118,12 +145,16 @@ void SequencerGrid::paint (juce::Graphics& g)
     // of beats regardless of resolution, plus a faint per-cell outline.
     const double stepBeatsForShading = SlicerAudioProcessor::getNoteValueBeats (processor.getStepResolutionIndex());
     const int stepsPerBeatForShading = juce::jmax (1, juce::roundToInt (stepBeatsForShading > 0.0 ? 1.0 / stepBeatsForShading : 4.0));
+    const int columnWidth = getColumnWidth();
 
     for (int row = 0; row < numRows; ++row)
     {
+        // Row 0 at the bottom, standard piano-roll convention (Step 38).
+        const int screenY = (numRows - 1 - row) * rowHeight;
+
         for (int col = 0; col < numColumns; ++col)
         {
-            const juce::Rectangle<int> cell (col * columnWidth, row * rowHeight, columnWidth, rowHeight);
+            const juce::Rectangle<int> cell (col * columnWidth, screenY, columnWidth, rowHeight);
             const bool beatShade = ((col / stepsPerBeatForShading) % 2) == 0;
 
             g.setColour (beatShade ? juce::Colours::white.withAlpha (0.04f) : juce::Colours::black.withAlpha (0.12f));
@@ -148,13 +179,15 @@ void SequencerGrid::paint (juce::Graphics& g)
     // Active cells -- piano-roll bars.
     for (int row = 0; row < numRows; ++row)
     {
+        const int screenY = (numRows - 1 - row) * rowHeight; // row 0 at the bottom (Step 38)
+
         for (int col = 0; col < numColumns; ++col)
         {
             if (! processor.getSequencerCell (row, col))
                 continue;
 
             const int barLengthSteps = computeBarLengthInSteps (row, col, numRows, numColumns);
-            const juce::Rectangle<int> bar (col * columnWidth, row * rowHeight, barLengthSteps * columnWidth, rowHeight);
+            const juce::Rectangle<int> bar (col * columnWidth, screenY, barLengthSteps * columnWidth, rowHeight);
 
             g.setColour (juce::Colours::orange.withAlpha (0.85f));
             g.fillRect (bar.reduced (1));

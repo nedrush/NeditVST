@@ -39,6 +39,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (loopLengthSlider);
     loopLengthSlider.setSliderStyle (juce::Slider::IncDecButtons);
+    loopLengthSlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
     loopLengthSlider.setRange (1.0, 8.0, 1.0);
     loopLengthSlider.setValue (processor.getLoopLengthBars(), juce::dontSendNotification);
     loopLengthSlider.onValueChange = [this]
@@ -80,6 +81,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (manualBpmOverrideSlider);
     manualBpmOverrideSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    manualBpmOverrideSlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
     manualBpmOverrideSlider.setRange (20.0, 300.0, 0.1);
     manualBpmOverrideSlider.setValue (processor.getManualBpmOverrideValue(), juce::dontSendNotification);
     manualBpmOverrideSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
@@ -123,6 +125,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (grainSizeSlider);
     grainSizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    grainSizeSlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
     grainSizeSlider.setRange (20.0, 150.0, 1.0);
     grainSizeSlider.setValue (processor.getGrainSizeMs(), juce::dontSendNotification);
     grainSizeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
@@ -160,6 +163,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (pitchShiftSlider);
     pitchShiftSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    pitchShiftSlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
     pitchShiftSlider.setRange (-24.0, 24.0, 1.0);
     pitchShiftSlider.setValue (processor.getPitchShiftSemitones(), juce::dontSendNotification);
     pitchShiftSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
@@ -174,6 +178,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (sensitivitySlider);
     sensitivitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    sensitivitySlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
     sensitivitySlider.setRange (0.0, 1.0, 0.01);
     sensitivitySlider.setValue (processor.getSensitivity(), juce::dontSendNotification);
     sensitivitySlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
@@ -233,6 +238,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (fadeInSlider);
     fadeInSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    fadeInSlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
     fadeInSlider.setRange (0.0, 100.0, 0.5);
     fadeInSlider.setValue (processor.getFadeInMs(), juce::dontSendNotification);
     fadeInSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
@@ -247,6 +253,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (fadeOutSlider);
     fadeOutSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    fadeOutSlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
     fadeOutSlider.setRange (0.0, 100.0, 0.5);
     fadeOutSlider.setValue (processor.getFadeOutMs(), juce::dontSendNotification);
     fadeOutSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
@@ -363,6 +370,22 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         processor.setStepResolutionIndex (stepResolutionSelector.getSelectedId() - 1);
     };
 
+    controlsContent.addAndMakeVisible (patternLengthLabel);
+    patternLengthLabel.setText ("Pattern length (bars)", juce::dontSendNotification);
+    patternLengthLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (patternLengthSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numPatternLengthBarsOptions; ++i)
+        patternLengthSelector.addItem (SlicerAudioProcessor::getPatternLengthBarsName (i), i + 1); // JUCE item IDs are 1-based
+    patternLengthSelector.setSelectedId (processor.getPatternLengthBarsIndex() + 1, juce::dontSendNotification);
+    patternLengthSelector.onChange = [this]
+    {
+        processor.setPatternLengthBarsIndex (patternLengthSelector.getSelectedId() - 1);
+    };
+
+    controlsContent.addAndMakeVisible (randomizeSequenceButton);
+    randomizeSequenceButton.addListener (this);
+
     controlsContent.addAndMakeVisible (sequencerViewport);
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
     sequencerViewport.setScrollBarsShown (true, true);
@@ -417,6 +440,7 @@ SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
     auditionButton.removeListener (this);
     zoomToTrimsButton.removeListener (this);
     resetZoomButton.removeListener (this);
+    randomizeSequenceButton.removeListener (this);
 }
 
 void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
@@ -425,7 +449,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 37: Sequenced Trigger Mode (v1, monophonic)",
+    g.drawFittedText ("NeditVST — step 38: Sequencer fixes + Randomize",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
     // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider
@@ -475,6 +499,13 @@ void SlicerAudioProcessorEditor::resized()
     zoomButtonsRow.removeFromLeft (10);
     resetZoomButton.setBounds (zoomButtonsRow.removeFromLeft (150));
     area.removeFromTop (10);
+
+    // SequencerGrid's own width (Step 38) -- matches WaveformDisplay's,
+    // set from the SAME `area` (still full width at this point; only
+    // heights have been carved off it above) so the two always line up
+    // rather than the grid defaulting to a cramped fixed-pixel-per-column
+    // width.
+    sequencerGrid.setTargetWidth (area.getWidth());
 
     waveformDisplay.setBounds (area); // takes up all remaining space, always fully visible
 }
@@ -604,6 +635,14 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     stepResolutionSelector.setBounds (stepResolutionRow.removeFromLeft (150));
     area.removeFromTop (10);
 
+    auto patternLengthRow = area.removeFromTop (30);
+    patternLengthLabel.setBounds (patternLengthRow.removeFromLeft (140));
+    patternLengthSelector.setBounds (patternLengthRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    randomizeSequenceButton.setBounds (area.removeFromTop (30));
+    area.removeFromTop (10);
+
     sequencerViewport.setBounds (area.removeFromTop (sequencerViewportHeight));
     area.removeFromTop (20);
 
@@ -646,6 +685,11 @@ void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
     else if (button == &resetZoomButton)
     {
         waveformDisplay.resetZoom();
+    }
+    else if (button == &randomizeSequenceButton)
+    {
+        processor.randomizeSequence();
+        sequencerGrid.repaint(); // immediate feedback rather than waiting for the next 30fps timer tick
     }
 }
 
@@ -715,9 +759,12 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     playbackStyleLabel.setVisible (! sequenced);
     playbackStyleGrid.setVisible (! sequenced);
 
-    // Sequenced-only controls (Step 37).
+    // Sequenced-only controls (Step 37/38).
     stepResolutionLabel.setVisible (sequenced);
     stepResolutionSelector.setVisible (sequenced);
+    patternLengthLabel.setVisible (sequenced);
+    patternLengthSelector.setVisible (sequenced);
+    randomizeSequenceButton.setVisible (sequenced);
     sequencerViewport.setVisible (sequenced);
 }
 

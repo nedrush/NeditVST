@@ -757,13 +757,19 @@ public:
     //     already reads), capped at numSequencerRows (32). If more than 32
     //     slices exist, only the first 32 in time-order are representable
     //     -- a known v1 limitation, not solved here.
-    //   columns ("steps") -- loopLengthBars * 4 * stepsPerBeat, where
+    //   columns ("steps") -- patternLengthBars * 4 * stepsPerBeat, where
     //     stepsPerBeat comes from the Step resolution dropdown (reusing
     //     the existing note-value palette directly -- e.g. selecting 16th
     //     notes gives 4 steps per beat; 2 bars at 16th notes = 32 steps).
+    //     patternLengthBars (Step 38) is its own dedicated control, NOT
+    //     loopLengthBars -- loopLengthBars governs the loaded audio's
+    //     tempo calculation and has no reason to match how many bars the
+    //     drawn pattern itself spans; conflating the two was what caused
+    //     Sequenced mode to only ever offer 1 bar's worth of steps before
+    //     this existed.
     //
-    // The pattern is reset to all-off whenever either dimension changes
-    // (slices rebuild, loop length changes, or step resolution changes)
+    // The pattern is reset to all-off whenever any dimension changes
+    // (slices rebuild, pattern length changes, or step resolution changes)
     // -- there's no way to meaningfully preserve a 2D pattern across a
     // dimension change, and this matches the same "reset to a sane
     // default whenever the underlying structure changes" convention
@@ -794,9 +800,27 @@ public:
     {
         const double gridBeats = getNoteValueBeats (stepResolutionIndex.load());
         const double stepsPerBeat = (gridBeats > 0.0) ? (1.0 / gridBeats) : 1.0;
-        const int rawSteps = juce::roundToInt ((double) loopLengthBars.load() * 4.0 * stepsPerBeat);
+        const int patternBars = getPatternLengthBarsValue (patternLengthBarsIndex.load());
+        const int rawSteps = juce::roundToInt ((double) patternBars * 4.0 * stepsPerBeat);
         return juce::jlimit (1, maxSequencerColumns, rawSteps);
     }
+
+    // Pattern length (Step 38) -- 1/2/4 bars, deliberately separate from
+    // loopLengthBars (see the class-level doc comment above). Changing it
+    // changes the column count, so it resets the grid the same way Step
+    // resolution already does.
+    static constexpr int numPatternLengthBarsOptions = 3;
+    static juce::String getPatternLengthBarsName (int index); // "1 bar" / "2 bars" / "4 bars"
+    static int getPatternLengthBarsValue (int index);         // 1 / 2 / 4
+
+    void setPatternLengthBarsIndex (int index)
+    {
+        patternLengthBarsIndex.store (juce::jlimit (0, numPatternLengthBarsOptions - 1, index));
+        const juce::ScopedLock sl (sampleLock);
+        resetSequencerGrid(); // column count just changed
+    }
+
+    int getPatternLengthBarsIndex() const { return patternLengthBarsIndex.load(); }
 
     // Step resolution -- reuses the same 20-value note-value palette as
     // Clock reference/Quantize Transients' Grid, rather than a separate
@@ -817,6 +841,17 @@ public:
     // being queued and processed).
     bool getSequencerCell (int row, int column) const;
     void setSequencerCell (int row, int column, bool active);
+
+    // Randomize Sequence (Step 38): clears the pattern, then randomly
+    // activates cells across all available rows/columns. Each placed hit
+    // treats its own row's slice-length-in-steps as an exclusion zone --
+    // no other hit (in any row, since a same-column hit elsewhere would
+    // structurally cut this one off anyway, and a same-row hit shortly
+    // after would just be inaudible/redundant under it) may land in the
+    // columns that slice would still be ringing out in. Simple
+    // constraint-aware placement, not a "smart" generative algorithm --
+    // it just avoids obviously-wrong overlaps.
+    void randomizeSequence();
 
     // Lock-free copy of the currently active step column, for the UI's
     // playhead indicator on the sequencer grid -- same pattern as
@@ -1074,6 +1109,7 @@ private:
     // thread every sample Sequenced mode is active, written from the UI
     // thread on every mouse-drawn cell.
     std::atomic<int> stepResolutionIndex { 7 }; // default: 16n (a sixteenth note)
+    std::atomic<int> patternLengthBarsIndex { 0 }; // default: 1 bar
     std::vector<bool> sequencerGrid;
 
     // Stretch (Step 22) character parameters — deliberately fixed, not
