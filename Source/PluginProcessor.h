@@ -63,6 +63,11 @@ public:
     juce::String getLoadedFileName() const { return loadedFileName; }
     const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
 
+    // TEMPORARY (onset-vs-peak debug view — read-only access to the cached
+    // envelope followers for WaveformDisplay's envelope overlay). Delete
+    // alongside the onset pipeline.
+    const TransientDetector& getTransientDetector() const { return transientDetector; }
+
     // The loaded sample's own sample rate (not the host's) — needed by
     // WaveformDisplay's zoom (Step 31) to convert a minimum-zoom duration
     // in milliseconds into source samples.

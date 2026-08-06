@@ -206,6 +206,11 @@ private:
     // default. Delete this toggle once the onset-vs-peak decision is made.
     juce::ToggleButton onsetDetectionToggle { "Use Onset Detection (temporary A/B test)" };
 
+    // TEMPORARY (onset-vs-peak debug view): overlays the cached envelope
+    // follower curves on the waveform and suppresses the probability
+    // faders. Delete alongside the onset pipeline.
+    juce::ToggleButton envelopesToggle { "Show envelopes (debug)" };
+
     // Quantize detected transients to grid (Step 35) — auto-detected
     // transients only, never manual points (see PluginProcessor.h's
     // doc comment for why). Grid dropdown visible only while the toggle

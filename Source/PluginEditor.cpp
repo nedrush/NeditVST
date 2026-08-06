@@ -218,6 +218,16 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         updateAfterSampleOrSliceChange();
     };
 
+    // TEMPORARY (onset-vs-peak debug view): overlay the envelope followers
+    // on the waveform; also suppresses the probability faders so detection
+    // can be inspected without probability edits getting in the way.
+    controlsContent.addAndMakeVisible (envelopesToggle);
+    envelopesToggle.setToggleState (false, juce::dontSendNotification);
+    envelopesToggle.onClick = [this]
+    {
+        waveformDisplay.setDebugEnvelopesEnabled (envelopesToggle.getToggleState());
+    };
+
     controlsContent.addAndMakeVisible (quantizeTransientsToggle);
     quantizeTransientsToggle.setToggleState (processor.getQuantizeTransientsEnabled(), juce::dontSendNotification);
     quantizeTransientsToggle.onClick = [this]
@@ -606,6 +616,9 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     area.removeFromTop (10);
 
     onsetDetectionToggle.setBounds (area.removeFromTop (24)); // TEMPORARY -- see the toggle's own doc comment in the header
+    area.removeFromTop (10);
+
+    envelopesToggle.setBounds (area.removeFromTop (24)); // TEMPORARY -- see the toggle's own doc comment in the header
     area.removeFromTop (10);
 
     quantizeTransientsToggle.setBounds (area.removeFromTop (24));

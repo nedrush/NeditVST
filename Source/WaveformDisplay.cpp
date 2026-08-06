@@ -99,6 +99,47 @@ void WaveformDisplay::paint (juce::Graphics& g)
         g.drawVerticalLine (x, y1, y2);
     }
 
+    // TEMPORARY (onset-vs-peak debug view — see setDebugEnvelopesEnabled()):
+    // plot the cached envelope-follower curves over the waveform so the
+    // detection behaviour can be inspected visually. Both are drawn with the
+    // same amplitude scale as the waveform itself (midY - env * halfHeight,
+    // envelope clipped to [0, 1]): white = slow peak-pipeline envelope
+    // (1ms attack / 50ms release), gold = fast onset envelope (0.2ms attack
+    // / 2ms release) — matching the Peak=white / Onset=gold marker colours
+    // used everywhere else in the comparison tool. One sample per pixel
+    // column, enough to see where threshold crossings and walk-back local
+    // minima sit.
+    if (debugEnvelopesEnabled)
+    {
+        const auto& peakEnv = processor.getTransientDetector().getPeakEnvelope();
+        const auto& onsetEnv = processor.getTransientDetector().getOnsetEnvelope();
+
+        const int totalSamplesDebug = processor.getSampleBuffer().getNumSamples();
+        const int widthPixels = (int) waveformPeaks.size();
+
+        if ((int) peakEnv.size() == totalSamplesDebug && (int) onsetEnv.size() == totalSamplesDebug && widthPixels > 0)
+        {
+            auto drawEnvelope = [&] (const std::vector<float>& env, juce::Colour colour)
+            {
+                juce::Path path;
+                path.startNewSubPath (0.0f, midY - juce::jmin (1.0f, env[(size_t) juce::jlimit (0, totalSamplesDebug - 1, visibleStartSample)]) * halfHeight);
+
+                for (int x = 1; x < widthPixels; ++x)
+                {
+                    const int sample = juce::jlimit (0, totalSamplesDebug - 1, xToSample (x));
+                    const float envY = midY - juce::jmin (1.0f, env[(size_t) sample]) * halfHeight;
+                    path.lineTo ((float) x, envY);
+                }
+
+                g.setColour (colour.withAlpha (0.9f));
+                g.strokePath (path, juce::PathStrokeType (1.0f));
+            };
+
+            drawEnvelope (peakEnv, juce::Colours::white);
+            drawEnvelope (onsetEnv, juce::Colours::gold);
+        }
+    }
+
     // --- Trim markers (Step 23): dim everything outside [trimStart, trimEnd)
     // and draw two draggable flagged handles, distinct in colour/shape
     // from slice/manual/auto boundary lines so they're never confused. ---
@@ -282,6 +323,12 @@ void WaveformDisplay::paint (juce::Graphics& g)
         // controls in Slice Length mode, just applied to painting here
         // instead of a juce::Component's setVisible().
         if (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::sequenced)
+            continue;
+
+        // TEMPORARY (debug view): while the envelope overlay is on, the
+        // probability faders are suppressed so detection can be inspected
+        // without probability edits getting in the way.
+        if (debugEnvelopesEnabled)
             continue;
 
         // Probability fader: a translucent bar spanning this slice's full
@@ -574,6 +621,11 @@ void WaveformDisplay::mouseDown (const juce::MouseEvent& event)
         return;
     }
 
+    // TEMPORARY (debug view): probability editing is disabled while the
+    // envelope overlay is on.
+    if (debugEnvelopesEnabled)
+        return;
+
     setProbabilityFromMouse (event);
 }
 
@@ -620,6 +672,11 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
         refresh();
         return;
     }
+
+    // TEMPORARY (debug view): probability editing is disabled while the
+    // envelope overlay is on.
+    if (debugEnvelopesEnabled)
+        return;
 
     setProbabilityFromMouse (event);
 }
@@ -875,6 +932,15 @@ void WaveformDisplay::filesDropped (const juce::StringArray& files, int /*x*/, i
         }
     }
 
+    repaint();
+}
+
+void WaveformDisplay::setDebugEnvelopesEnabled (bool enabled)
+{
+    if (debugEnvelopesEnabled == enabled)
+        return;
+
+    debugEnvelopesEnabled = enabled;
     repaint();
 }
 

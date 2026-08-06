@@ -90,6 +90,14 @@ public:
     bool hasAnalysis() const { return ! derivative.empty(); }
     int getAnalyzedLengthInSamples() const { return numSamples; }
 
+    // TEMPORARY (debug overlays for the onset-vs-peak comparison tool):
+    // read-only access to the cached envelope-follower outputs so the
+    // waveform can plot them. `envelope` is the slow (1ms attack / 50ms
+    // release) peak-pipeline follower; `onsetEnvelope` is the fast (0.2ms
+    // attack / 2ms release) one. Delete alongside the onset pipeline.
+    const std::vector<float>& getPeakEnvelope() const { return envelope; }
+    const std::vector<float>& getOnsetEnvelope() const { return onsetEnvelope; }
+
     /** Manual slice points (Step 10) snap to this — searches the cached
         derivative curve within +/- searchRadiusSamples of targetSample and
         returns the index of the strongest nearby transient-like peak, even
