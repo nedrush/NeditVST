@@ -137,6 +137,47 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
             drawEnvelope (peakEnv, juce::Colours::white);
             drawEnvelope (onsetEnv, juce::Colours::gold);
+
+            // Spectral flux (the broadband-onset cue): one value per FFT hop,
+            // normalized to its own max and drawn as a magenta trace from the
+            // bottom of the waveform up. On sustained low-pitched material
+            // this should stay nearly flat between true attacks — exactly the
+            // structural immunity that the fast-envelope derivative lacked.
+            const auto& flux = processor.getTransientDetector().getSpectralFlux();
+            const int hop = processor.getTransientDetector().getSpectralHopSamples();
+
+            if (hop > 0 && ! flux.empty())
+            {
+                float fluxMax = 1e-9f;
+
+                for (const float f : flux)
+                    fluxMax = juce::jmax (fluxMax, f);
+
+                const int numFrames = (int) flux.size();
+                const float bottomY = bounds.getBottom();
+
+                juce::Path path;
+                bool started = false;
+
+                for (int x = 0; x < widthPixels; ++x)
+                {
+                    const int sample = juce::jlimit (0, totalSamplesDebug - 1, xToSample (x));
+                    const int frame = juce::jlimit (0, numFrames - 1, sample / hop);
+                    const float norm = juce::jmin (1.0f, flux[(size_t) frame] / fluxMax);
+                    const float y = bottomY - norm * halfHeight;
+
+                    if (! started)
+                    {
+                        path.startNewSubPath ((float) x, y);
+                        started = true;
+                    }
+                    else
+                        path.lineTo ((float) x, y);
+                }
+
+                g.setColour (juce::Colours::magenta.withAlpha (0.8f));
+                g.strokePath (path, juce::PathStrokeType (1.0f));
+            }
         }
     }
 

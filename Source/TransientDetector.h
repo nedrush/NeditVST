@@ -1,6 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <juce_dsp/juce_dsp.h>
+#include <complex>
 #include <vector>
 
 //==============================================================================
@@ -98,6 +100,14 @@ public:
     const std::vector<float>& getPeakEnvelope() const { return envelope; }
     const std::vector<float>& getOnsetEnvelope() const { return onsetEnvelope; }
 
+    // TEMPORARY (spectral debug layer): per-FRAME spectral flux / centroid.
+    // sampleToFrame() maps a sample index into the (coarser) frame index so
+    // the display can plot these alongside the per-sample envelopes.
+    int getSpectralHopSamples() const { return fftHopSamples; }
+    int getNumSpectralFrames() const { return (int) spectralFlux.size(); }
+    const std::vector<float>& getSpectralFlux() const { return spectralFlux; }
+    const std::vector<float>& getSpectralCentroid() const { return spectralCentroid; }
+
     /** Manual slice points (Step 10) snap to this — searches the cached
         derivative curve within +/- searchRadiusSamples of targetSample and
         returns the index of the strongest nearby transient-like peak, even
@@ -148,7 +158,22 @@ private:
     // smoothing across ~1ms.
     std::vector<float> signedMonoSignal;
     std::vector<float> onsetEnvelope;
-    std::vector<float> onsetDerivative;
-    float onsetGlobalMaxDerivative = 0.0f;
-    float onsetNoiseFloor = 0.0f;
+
+    // TEMPORARY (onset pipeline — spectral debug layer): per-FRAME spectral
+    // flux and centroid (one entry per FFT hop, NOT per sample). flux = L2 norm
+    // of the positive magnitude change between adjacent frames — the classic
+    // broadband-onset cue, structurally immune to the low-fundamental ripple
+    // that fooled the fast-envelope derivative. centroid = magnitude-weighted
+    // mean bin — a coarse "broadband vs. tonal" cue. The fast-envelope
+    // derivative and its global stats were removed since the hybrid detector
+    // thresholds the SLOW pipeline's derivative for "that a hit happened".
+    // Delete with the onset pipeline once the right feature is validated.
+    static constexpr int fftSize = 1024;
+    static constexpr int fftHopSamples = 512;
+    int spectralBinCount = fftSize / 2 + 1;
+    std::vector<float> spectralFlux;
+    std::vector<float> spectralCentroid;
+    juce::dsp::FFT fft { juce::jmin (32, juce::roundToInt (std::log2 ((float) fftSize))) };
+    std::vector<std::complex<float>> fftDataRead;
+    std::vector<std::complex<float>> fftDataWrite;
 };
