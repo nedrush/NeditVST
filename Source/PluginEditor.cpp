@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Perf.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), sequencerGrid (p), playbackStylePalette (p)
@@ -748,6 +749,20 @@ void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
 
 void SlicerAudioProcessorEditor::timerCallback()
 {
+    // Profile dump: this 10 Hz timer is the natural cadence for a 1 Hz
+    // Perf:: summary (see Source/Perf.h -- enabled via NEDITVST_PROFILE=1).
+    static int ticksSinceLastDump = 0;
+    static juce::uint64 lastDumpTicks = juce::Time::getHighResolutionTicks();
+
+    if (++ticksSinceLastDump >= 10)
+    {
+        const auto now = juce::Time::getHighResolutionTicks();
+        Perf::dumpToStderr (now - lastDumpTicks);
+        Perf::reset();
+        lastDumpTicks = now;
+        ticksSinceLastDump = 0;
+    }
+
     undoButton.setEnabled (processor.canUndoEdit());
     redoButton.setEnabled (processor.canRedoEdit());
 

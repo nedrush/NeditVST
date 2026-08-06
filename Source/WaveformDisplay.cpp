@@ -1,4 +1,5 @@
 #include "WaveformDisplay.h"
+#include "Perf.h"
 #include <cmath>
 
 WaveformDisplay::WaveformDisplay (SlicerAudioProcessor& processorToUse)
@@ -9,6 +10,8 @@ WaveformDisplay::WaveformDisplay (SlicerAudioProcessor& processorToUse)
 
 void WaveformDisplay::timerCallback()
 {
+    const Perf::ScopedSection perf ("timerCallback");
+
     if (! processor.hasSample())
         return;
 
@@ -65,6 +68,8 @@ void WaveformDisplay::clearPreviewSlices()
 
 void WaveformDisplay::paint (juce::Graphics& g)
 {
+    const Perf::ScopedSection perf ("paint");
+
     const auto bounds = getLocalBounds().toFloat();
 
     g.setColour (juce::Colours::black.withAlpha (0.35f));
@@ -333,11 +338,15 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
 void WaveformDisplay::resized()
 {
+    const Perf::ScopedSection perf ("resized");
+
     rebuildWaveformPeaks(); // peak columns depend on the component's pixel width
 }
 
 void WaveformDisplay::rebuildWaveformPeaks()
 {
+    const Perf::ScopedSection perf ("rebuildWaveformPeaks");
+
     waveformPeaks.clear();
 
     if (! processor.hasSample())
@@ -880,6 +889,8 @@ void WaveformDisplay::filesDropped (const juce::StringArray& files, int /*x*/, i
 
 void WaveformDisplay::refresh()
 {
+    const Perf::ScopedSection perf ("refresh");
+
     hasPreview = false; // a real refresh means there's now committed data to show
 
     const int totalSamples = processor.hasSample() ? processor.getSampleBuffer().getNumSamples() : 0;

@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Perf.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -2387,6 +2388,8 @@ void SlicerAudioProcessor::setStateInformation (const void* /*data*/, int /*size
 
 void SlicerAudioProcessor::loadSample (const juce::File& file)
 {
+    const Perf::ScopedSection perf ("loadSample");
+
     std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
 
     if (reader == nullptr)
@@ -2494,6 +2497,8 @@ void SlicerAudioProcessor::renderAudition (juce::AudioBuffer<float>& buffer, dou
 
 void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sensitivity, float holdoffMs)
 {
+    const Perf::ScopedSection perf ("rebuildSlices");
+
     const int trimStart = trimStartSample.load();
     const int trimEnd = trimEndSample.load();
 
@@ -2536,6 +2541,8 @@ void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sens
 
 std::vector<Slice> SlicerAudioProcessor::previewSlicesAtSensitivity (float sensitivity) const
 {
+    const Perf::ScopedSection perf ("previewSlicesAtSensitivity");
+
     const int trimStart = trimStartSample.load();
     const int trimEnd = trimEndSample.load();
 
