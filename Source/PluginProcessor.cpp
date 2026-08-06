@@ -2505,6 +2505,27 @@ void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sens
 
     const juce::ScopedLock sl (sampleLock);
 
+    // TEMPORARY (Onset vs. Peak comparison tool): refresh the cached marker
+    // sets backing the waveform's comparison overlay (issue #10). This is
+    // the single choke point every detection-input change routes through, so
+    // both caches are guaranteed to reflect the same sensitivity/holdoff/
+    // trim `slices` was just built from -- paint() reads them at 30fps and
+    // must not re-run detection itself.
+    const auto peakSlices = transientDetector.detectSlices (sensitivity, defaultHoldoffMs, trimStart, trimEnd,
+                                                            DetectionMethod::peak);
+    const auto onsetSlices = transientDetector.detectSlices (sensitivity, defaultHoldoffMs, trimStart, trimEnd,
+                                                             DetectionMethod::onset);
+
+    cachedPeakDetectionMarkers.clear();
+    cachedPeakDetectionMarkers.reserve (peakSlices.size());
+    for (const auto& s : peakSlices)
+        cachedPeakDetectionMarkers.push_back (s.startSample);
+
+    cachedOnsetDetectionMarkers.clear();
+    cachedOnsetDetectionMarkers.reserve (onsetSlices.size());
+    for (const auto& s : onsetSlices)
+        cachedOnsetDetectionMarkers.push_back (s.startSample);
+
     slices = mergeOnsetsIntoSlices (autoSlices, trimStart, trimEnd);
     sliceProbabilities.assign (slices.size(), 1.0f); // default: even odds across all slices
     resetSequencerGrid(); // Step 37 -- row count just changed
@@ -2530,36 +2551,9 @@ std::vector<Slice> SlicerAudioProcessor::previewSlicesAtSensitivity (float sensi
 }
 
 // TEMPORARY (Onset vs. Peak comparison tool -- see the public section this
-// pairs with in PluginProcessor.h). Raw, unmerged detector output for the
-// waveform's comparison overlay only.
-std::vector<int> SlicerAudioProcessor::getPeakDetectionMarkers() const
-{
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
-    auto rawSlices = transientDetector.detectSlices (currentSensitivity.load(), defaultHoldoffMs, trimStart, trimEnd,
-                                                      DetectionMethod::peak);
-
-    std::vector<int> markers;
-    markers.reserve (rawSlices.size());
-    for (const auto& s : rawSlices)
-        markers.push_back (s.startSample);
-    return markers;
-}
-
-std::vector<int> SlicerAudioProcessor::getOnsetDetectionMarkers() const
-{
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
-    auto rawSlices = transientDetector.detectSlices (currentSensitivity.load(), defaultHoldoffMs, trimStart, trimEnd,
-                                                      DetectionMethod::onset);
-
-    std::vector<int> markers;
-    markers.reserve (rawSlices.size());
-    for (const auto& s : rawSlices)
-        markers.push_back (s.startSample);
-    return markers;
-}
-
+// pairs with in PluginProcessor.h). The marker sets themselves are cached
+// inside rebuildSlicesFromDetectionAndManualPoints() -- see the inline
+// getPeakDetectionMarkers()/getOnsetDetectionMarkers() accessors there.
 std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices, int trimStart, int trimEnd) const
 {
     const int matchToleranceSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
