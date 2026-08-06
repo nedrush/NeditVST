@@ -20,3 +20,7 @@
 # General editor/OS junk
 *.swp
 .vscode/
+
+# perf profile captures
+*.perf
+*.perf.old

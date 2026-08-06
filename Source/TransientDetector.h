@@ -108,6 +108,28 @@ public:
                           int rangeStartSample = -1, int rangeEndSample = -1) const;
 
 private:
+    // Whole-buffer onsets for a given (sensitivity, holdoffMs, method),
+    // computed once and cached. detectSlices() over any trim range filters
+    // this cache instead of re-running the O(buffer) peak-pick, so
+    // trim-handle drags (which keep sensitivity/holdoff fixed and only move
+    // the range) are O(#onsets) instead of O(trim span). Filtering the
+    // whole-buffer onsets is exactly equivalent to range-limited detection:
+    // the pick functions' holdoff spacing is range-independent, and ranged
+    // detection always accepts the first in-range onset regardless of the
+    // seed. One slot per DetectionMethod, since rebuildSlices() calls all
+    // three in sequence.
+    struct OnsetCache
+    {
+        bool valid = false;
+        float sensitivity = 0.0f;
+        float holdoffMs = 0.0f;
+        int numSamplesCached = 0;
+        std::vector<int> onsets;
+    };
+    mutable OnsetCache onsetCache[3]; // detectSlices() is const
+
+    const std::vector<int>& cachedWholeBufferOnsets (float sensitivity, float holdoffMs, DetectionMethod method) const;
+
     // Peak-picking pipeline (unchanged from the original implementation).
     std::vector<int> pickPeakOnsets (float sensitivity, float holdoffMs,
                                       int rangeStartSample, int rangeEndSample) const;

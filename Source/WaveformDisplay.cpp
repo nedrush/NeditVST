@@ -1,4 +1,5 @@
 #include "WaveformDisplay.h"
+#include "Perf.h"
 #include <cmath>
 
 WaveformDisplay::WaveformDisplay (SlicerAudioProcessor& processorToUse)
@@ -9,6 +10,8 @@ WaveformDisplay::WaveformDisplay (SlicerAudioProcessor& processorToUse)
 
 void WaveformDisplay::timerCallback()
 {
+    const Perf::ScopedSection perf ("timerCallback");
+
     if (! processor.hasSample())
         return;
 
@@ -65,10 +68,21 @@ void WaveformDisplay::clearPreviewSlices()
 
 void WaveformDisplay::paint (juce::Graphics& g)
 {
+    const Perf::ScopedSection perf ("paint");
+
     const auto bounds = getLocalBounds().toFloat();
 
-    g.setColour (juce::Colours::black.withAlpha (0.35f));
-    g.fillRect (bounds);
+    // The waveform's static layers (background + per-column peaks) are
+    // rasterized into a cached Image and blitted here -- re-issuing ~900
+    // edge-table lines every 30fps frame was the dominant idle cost (the
+    // "redraw bug" class). The cache is invalidated whenever the peaks are
+    // rebuilt (zoom/pan/resize/load); everything overlay-ish stays
+    // per-frame because it scales with slice count, not sample count.
+    if (waveformImageDirty || waveformImage.getWidth() != getWidth()
+        || waveformImage.getHeight() != getHeight())
+        rebuildWaveformImage();
+
+    g.drawImageAt (waveformImage, 0, 0);
 
     if (isDraggingOver)
     {
@@ -83,20 +97,6 @@ void WaveformDisplay::paint (juce::Graphics& g)
         g.drawFittedText ("Drag and drop a sample here, or use Load Sample above",
                            getLocalBounds(), juce::Justification::centred, 2);
         return;
-    }
-
-    // --- Waveform itself ---
-    const float midY = bounds.getCentreY();
-    const float halfHeight = bounds.getHeight() * 0.45f;
-
-    g.setColour (juce::Colours::cyan.withAlpha (0.8f));
-
-    for (int x = 0; x < (int) waveformPeaks.size(); ++x)
-    {
-        const auto& peak = waveformPeaks[(size_t) x];
-        const float y1 = midY - peak.second * halfHeight;
-        const float y2 = midY - peak.first * halfHeight;
-        g.drawVerticalLine (x, y1, y2);
     }
 
     // --- Trim markers (Step 23): dim everything outside [trimStart, trimEnd)
@@ -320,8 +320,8 @@ void WaveformDisplay::paint (juce::Graphics& g)
     if (! hasPreview)
     {
         const bool onsetActive = processor.getUseOnsetDetection();
-        const auto inactiveMarkers = onsetActive ? processor.getPeakDetectionMarkers()
-                                                  : processor.getOnsetDetectionMarkers();
+        const auto& inactiveMarkers = onsetActive ? processor.getPeakDetectionMarkers()
+                                                   : processor.getOnsetDetectionMarkers();
 
         g.setColour (onsetActive ? juce::Colours::white.withAlpha (0.5f)
                                   : juce::Colours::gold.withAlpha (0.5f));
@@ -333,24 +333,44 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
 void WaveformDisplay::resized()
 {
+    const Perf::ScopedSection perf ("resized");
+
     rebuildWaveformPeaks(); // peak columns depend on the component's pixel width
 }
 
 void WaveformDisplay::rebuildWaveformPeaks()
 {
-    waveformPeaks.clear();
+    const Perf::ScopedSection perf ("rebuildWaveformPeaks");
 
     if (! processor.hasSample())
         return;
 
+    const int width = juce::jmax (1, getWidth());
+    const int generation = processor.getSampleGeneration();
+
+    // Peaks depend ONLY on [visibleStartSample, visibleEndSample), the
+    // component width, and the loaded buffer. Many refresh() callers --
+    // notably trim-handle drags -- don't change any of those, so skip the
+    // O(visible-range) scan entirely and keep the existing cache.
+    if (visibleStartSample == cachedPeakStart && visibleEndSample == cachedPeakEnd
+        && width == cachedPeakWidth && generation == cachedPeakGeneration)
+        return;
+
+    waveformImageDirty = true;
+
     const auto& buffer = processor.getSampleBuffer();
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
-    const int width = juce::jmax (1, getWidth());
 
     if (numSamples == 0 || numChannels == 0)
         return;
 
+    // R2: the pyramid depends only on the loaded buffer, so it's rebuilt
+    // exactly once per sample generation (i.e. once per loadSample()).
+    if (peakPyramidGeneration != generation)
+        buildPeakPyramid();
+
+    waveformPeaks.clear();
     waveformPeaks.resize ((size_t) width);
 
     // Step 31: peaks are computed over the current visible range mapped to
@@ -372,6 +392,96 @@ void WaveformDisplay::rebuildWaveformPeaks()
         const int endSample = (startSample >= numSamples) ? startSample
                                                             : juce::jlimit (startSample + 1, numSamples, rawEnd);
 
+        // R2: column peaks come from the pyramid whenever the span is big
+        // enough to hit a level; otherwise (deep zoom-in) queryPeaks falls
+        // back to the raw per-sample scan, bounded by peakPyramidBase
+        // samples. Either way the visible-range scan is gone from the zoom
+        // path.
+        const auto p = queryPeaks (startSample, endSample);
+        waveformPeaks[(size_t) x] = { p.minVal, p.maxVal };
+    }
+
+    cachedPeakStart = visibleStartSample;
+    cachedPeakEnd = visibleEndSample;
+    cachedPeakWidth = width;
+    cachedPeakGeneration = generation;
+}
+
+void WaveformDisplay::buildPeakPyramid()
+{
+    const Perf::ScopedSection perf ("buildPeakPyramid");
+
+    peakPyramid.clear();
+
+    const auto& buffer = processor.getSampleBuffer();
+    const int numSamples = buffer.getNumSamples();
+    const int numChannels = buffer.getNumChannels();
+
+    if (numSamples == 0 || numChannels == 0)
+        return;
+
+    // Level 0: one {min, max} per peakPyramidBase-sample block. Higher
+    // levels fold the previous level's blocks in pairs. Every block at
+    // level k covers exactly [i * blockSize, min (numSamples, (i+1) * blockSize)),
+    // so tail blocks stay exact over their (possibly short) real range.
+    std::vector<MinMax> level0 ((size_t) ((numSamples + peakPyramidBase - 1) / peakPyramidBase));
+
+    for (size_t b = 0; b < level0.size(); ++b)
+    {
+        const int s0 = (int) b * peakPyramidBase;
+        const int s1 = juce::jmin (numSamples, s0 + peakPyramidBase);
+
+        float minVal = 0.0f;
+        float maxVal = 0.0f;
+
+        for (int s = s0; s < s1; ++s)
+        {
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                const float sample = buffer.getSample (ch, s);
+                minVal = juce::jmin (minVal, sample);
+                maxVal = juce::jmax (maxVal, sample);
+            }
+        }
+
+        level0[b] = { minVal, maxVal };
+    }
+
+    peakPyramid.push_back (std::move (level0));
+
+    while (peakPyramid.back().size() > 1)
+    {
+        const auto& prev = peakPyramid.back();
+        std::vector<MinMax> level ((prev.size() + 1) / 2);
+
+        for (size_t i = 0; i < level.size(); ++i)
+        {
+            const MinMax a = prev[i * 2];
+            const MinMax b = (i * 2 + 1 < prev.size()) ? prev[i * 2 + 1] : MinMax {};
+
+            level[i] = { juce::jmin (a.minVal, b.minVal), juce::jmax (a.maxVal, b.maxVal) };
+        }
+
+        peakPyramid.push_back (std::move (level));
+    }
+
+    peakPyramidGeneration = processor.getSampleGeneration();
+}
+
+WaveformDisplay::MinMax WaveformDisplay::queryPeaks (int startSample, int endSample) const
+{
+    if (endSample <= startSample)
+        return {};
+
+    const int span = endSample - startSample;
+
+    // Deep zoom-in: fewer samples per pixel than one pyramid block. The raw
+    // scan is bounded by peakPyramidBase samples per column, trivially cheap.
+    if (span < peakPyramidBase)
+    {
+        const auto& buffer = processor.getSampleBuffer();
+        const int numChannels = buffer.getNumChannels();
+
         float minVal = 0.0f;
         float maxVal = 0.0f;
 
@@ -385,7 +495,67 @@ void WaveformDisplay::rebuildWaveformPeaks()
             }
         }
 
-        waveformPeaks[(size_t) x] = { minVal, maxVal };
+        return { minVal, maxVal };
+    }
+
+    // Largest level whose block size still fits the span -- then the column
+    // straddles at most three aligned blocks, so this is a handful of
+    // lookups at any zoom-out level. The result is the exact min/max of the
+    // window rounded out to block boundaries, at most one column-width wider
+    // than the pixel-exact window.
+    int blockSize = peakPyramidBase;
+    size_t levelIndex = 0;
+
+    while ((juce::int64) blockSize * 2 <= span)
+    {
+        blockSize <<= 1;
+        ++levelIndex;
+    }
+
+    const auto& level = peakPyramid[levelIndex];
+
+    const int i0 = startSample / blockSize;
+    const int i1 = (endSample - 1) / blockSize;
+
+    MinMax result {};
+
+    for (int i = i0; i <= i1; ++i)
+    {
+        const auto& p = level[(size_t) i];
+        result.minVal = juce::jmin (result.minVal, p.minVal);
+        result.maxVal = juce::jmax (result.maxVal, p.maxVal);
+    }
+
+    return result;
+}
+
+void WaveformDisplay::rebuildWaveformImage()
+{
+    const Perf::ScopedSection perf ("rebuildWaveformImage");
+
+    waveformImage = juce::Image (juce::Image::ARGB, juce::jmax (1, getWidth()), juce::jmax (1, getHeight()), true);
+    waveformImageDirty = false;
+
+    juce::Graphics g (waveformImage);
+    const auto bounds = waveformImage.getBounds().toFloat();
+
+    g.setColour (juce::Colours::black.withAlpha (0.35f));
+    g.fillRect (bounds);
+
+    if (! processor.hasSample())
+        return;
+
+    const float midY = bounds.getCentreY();
+    const float halfHeight = bounds.getHeight() * 0.45f;
+
+    g.setColour (juce::Colours::cyan.withAlpha (0.8f));
+
+    for (int x = 0; x < (int) waveformPeaks.size(); ++x)
+    {
+        const auto& peak = waveformPeaks[(size_t) x];
+        const float y1 = midY - peak.second * halfHeight;
+        const float y2 = midY - peak.first * halfHeight;
+        g.drawVerticalLine (x, y1, y2);
     }
 }
 
@@ -585,15 +755,20 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
         const int beforeTrimStart = processor.getTrimStartSample();
         const bool snap = ! event.mods.isShiftDown();
         processor.setTrimStartSample (xToSample (event.x), snap);
-        refresh();
+        const bool changed = processor.getTrimStartSample() != beforeTrimStart;
 
-        // Only fire on an ACTUAL change (Step 33) -- a drag that's
-        // clamped at the same position every frame (e.g. pinned against
-        // the other handle, or against the buffer's own edge) shouldn't
-        // keep re-flagging Loop Length as stale for a value that never
-        // moved.
-        if (onTrimChanged && processor.getTrimStartSample() != beforeTrimStart)
+        // Exactly ONE rebuild+repaint per drag event: onTrimChanged() routes
+        // through updateAfterSampleOrSliceChange() → refresh() (rebuild +
+        // repaint + label updates). When the value didn't actually move
+        // (clamped), autoPanIfNearEdge may still have panned the view, so a
+        // minimal rebuild is still needed -- but never both.
+        if (changed && onTrimChanged)
             onTrimChanged();
+        else
+        {
+            rebuildWaveformPeaks();
+            repaint();
+        }
 
         return;
     }
@@ -604,10 +779,15 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
         const int beforeTrimEnd = processor.getTrimEndSample();
         const bool snap = ! event.mods.isShiftDown();
         processor.setTrimEndSample (xToSample (event.x), snap);
-        refresh();
+        const bool changed = processor.getTrimEndSample() != beforeTrimEnd;
 
-        if (onTrimChanged && processor.getTrimEndSample() != beforeTrimEnd)
+        if (changed && onTrimChanged)
             onTrimChanged();
+        else
+        {
+            rebuildWaveformPeaks();
+            repaint();
+        }
 
         return;
     }
@@ -880,6 +1060,8 @@ void WaveformDisplay::filesDropped (const juce::StringArray& files, int /*x*/, i
 
 void WaveformDisplay::refresh()
 {
+    const Perf::ScopedSection perf ("refresh");
+
     hasPreview = false; // a real refresh means there's now committed data to show
 
     const int totalSamples = processor.hasSample() ? processor.getSampleBuffer().getNumSamples() : 0;

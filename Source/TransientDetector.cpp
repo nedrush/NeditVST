@@ -1,4 +1,5 @@
 #include "TransientDetector.h"
+#include <algorithm>
 
 namespace
 {
@@ -50,6 +51,9 @@ void TransientDetector::analyze (const juce::AudioBuffer<float>& buffer, double 
 
     numSamples = buffer.getNumSamples();
     analyzedSampleRate = sampleRate;
+
+    for (auto& c : onsetCache)
+        c.valid = false; // a new buffer invalidates all cached onsets
 
     if (numSamples == 0)
         return;
@@ -329,9 +333,22 @@ std::vector<Slice> TransientDetector::detectSlices (float sensitivity, float hol
 
     sensitivity = juce::jlimit (0.0f, 1.0f, sensitivity);
 
-    std::vector<int> onsets = (method == DetectionMethod::onset)
-                                   ? pickOnsetOnsets (sensitivity, holdoffMs, rangeStartSample, rangeEndSample)
-                                   : pickPeakOnsets (sensitivity, holdoffMs, rangeStartSample, rangeEndSample);
+    const auto& wholeOnsets = cachedWholeBufferOnsets (sensitivity, holdoffMs, method);
+
+    // Filter the cached whole-buffer onsets to the requested range. This is
+    // equivalent to pick*Onsets(sens, holdoff, rangeStart, rangeEnd): holdoff
+    // spacing is already enforced whole-buffer, and the first in-range onset
+    // is always accepted by range-limited detection regardless of the seed,
+    // so no onsets are gained or lost by filtering. (One ultra-edge-case
+    // exception: the onset pipeline's zero-crossing snap can push an onset
+    // past rangeEnd, which range-limited detection would have clamped into
+    // the range — an invisible 1-sample boundary at the very trim edge.)
+    std::vector<int> onsets;
+    onsets.reserve (wholeOnsets.size() / 2);
+
+    const auto first = std::lower_bound (wholeOnsets.begin(), wholeOnsets.end(), rangeStartSample);
+    const auto last = std::upper_bound (first, wholeOnsets.end(), rangeEndSample - 1);
+    onsets.insert (onsets.end(), first, last);
 
     // Make sure nothing before the first detected onset gets orphaned —
     // the range start plays the role position 0 used to play pre-trim.
@@ -349,6 +366,29 @@ std::vector<Slice> TransientDetector::detectSlices (float sensitivity, float hol
     }
 
     return slices;
+}
+
+const std::vector<int>& TransientDetector::cachedWholeBufferOnsets (float sensitivity, float holdoffMs, DetectionMethod method) const
+{
+    auto& cache = onsetCache[(size_t) method];
+
+    const bool valid = cache.valid
+        && cache.sensitivity == sensitivity
+        && cache.holdoffMs == holdoffMs
+        && cache.numSamplesCached == numSamples;
+
+    if (valid)
+        return cache.onsets;
+
+    cache.valid = true;
+    cache.sensitivity = sensitivity;
+    cache.holdoffMs = holdoffMs;
+    cache.numSamplesCached = numSamples;
+    cache.onsets = (method == DetectionMethod::onset)
+                       ? pickOnsetOnsets (sensitivity, holdoffMs, 0, numSamples)
+                       : pickPeakOnsets (sensitivity, holdoffMs, 0, numSamples);
+
+    return cache.onsets;
 }
 
 int TransientDetector::findNearestPeak (int targetSample, int searchRadiusSamples,
