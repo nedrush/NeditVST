@@ -320,8 +320,8 @@ void WaveformDisplay::paint (juce::Graphics& g)
     if (! hasPreview)
     {
         const bool onsetActive = processor.getUseOnsetDetection();
-        const auto inactiveMarkers = onsetActive ? processor.getPeakDetectionMarkers()
-                                                  : processor.getOnsetDetectionMarkers();
+        const auto& inactiveMarkers = onsetActive ? processor.getPeakDetectionMarkers()
+                                                   : processor.getOnsetDetectionMarkers();
 
         g.setColour (onsetActive ? juce::Colours::white.withAlpha (0.5f)
                                   : juce::Colours::gold.withAlpha (0.5f));

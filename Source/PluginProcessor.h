@@ -114,8 +114,18 @@ public:
     // purely so WaveformDisplay can paint "what this algorithm alone would
     // place" for comparison. Never used to build the real, playable `slices`
     // list -- see rebuildSlicesFromDetectionAndManualPoints() for that.
-    std::vector<int> getPeakDetectionMarkers() const;
-    std::vector<int> getOnsetDetectionMarkers() const;
+    //
+    // Cached, not computed on demand (issue #10): these used to run
+    // detectSlices() on every call, and WaveformDisplay::paint() calls them
+    // at 30fps -- a full O(n) scan of the whole trim range per frame. They're
+    // now recomputed only inside rebuildSlicesFromDetectionAndManualPoints(),
+    // the single choke point every detection-input change (sample load,
+    // sensitivity, holdoff, trim, method toggle) already routes through, so
+    // paint() just reads the last committed result. Safe because both the
+    // writers (the rebuild path) and the readers (paint) run on the UI
+    // thread.
+    const std::vector<int>& getPeakDetectionMarkers() const { return cachedPeakDetectionMarkers; }
+    const std::vector<int>& getOnsetDetectionMarkers() const { return cachedOnsetDetectionMarkers; }
 
     //=== Quantize detected transients to grid (Step 35) ===
     // Auto-detected transients only -- manual points are deliberately
@@ -1499,6 +1509,13 @@ private:
     // behaviour until explicitly opted into" convention as every other
     // toggle in this class. Delete alongside the rest of that section.
     std::atomic<bool> useOnsetDetectionForPlayback { false };
+
+    // TEMPORARY: cached marker sets backing the getPeakDetectionMarkers()/
+    // getOnsetDetectionMarkers() comparison overlay (issue #10). Written by
+    // rebuildSlicesFromDetectionAndManualPoints(), read by paint() -- both
+    // UI thread, see those accessors' doc comment for why they're cached.
+    std::vector<int> cachedPeakDetectionMarkers;
+    std::vector<int> cachedOnsetDetectionMarkers;
 
     std::atomic<float> fadeInMs { 5.0f };
     std::atomic<float> fadeOutMs { 15.0f };
