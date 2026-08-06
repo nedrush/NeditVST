@@ -3,11 +3,126 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <csignal>
+#include <execinfo.h>
+#include <fcntl.h>
+#include <fstream>
 #include <limits>
+#include <mutex>
+#include <unistd.h>
 
 namespace
 {
+    // Crash diagnostics + file logging (see docs/logging-system.md).
+    //
+    // NOTE: the signal handler below must stay async-signal-safe, which
+    // means it can only use raw POSIX calls (open/write/close) and must
+    // NEVER call into JUCE or allocate. The log file path is therefore
+    // resolved once at init into a plain static buffer (crashLogPath);
+    // the handler just opens whatever's already in there. That also keeps
+    // the path portable -- resolved via juce::File::getSpecialLocation so
+    // it lands in ~/nedit_crash.log on macOS as well as Linux -- instead
+    // of a hardcoded /home/... path that only exists on one machine.
+    std::ofstream logFile;
+    std::mutex logMutex;
+    std::array<char, 1024> crashLogPath;
+
+    void neditLog (const char* msg)
+    {
+        const std::lock_guard<std::mutex> lock (logMutex);
+
+        if (! logFile.is_open())
+        {
+            auto path = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                            .getChildFile ("nedit_crash.log");
+            logFile.open (path.getFullPathName().toRawUTF8(), std::ios::app);
+        }
+
+        // timestamp
+        auto now = std::chrono::system_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds> (now.time_since_epoch()).count();
+        logFile << "[" << ms << "] " << msg << "\n";
+        logFile.flush();
+    }
+
+    void initCrashLogPath()
+    {
+        auto path = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                        .getChildFile ("nedit_crash.log")
+                        .getFullPathName();
+
+        std::memset (crashLogPath.data(), 0, crashLogPath.size());
+        std::strncpy (crashLogPath.data(), path.toRawUTF8(), crashLogPath.size() - 1);
+    }
+
+    void neditLogSignalHandler (int sig)
+    {
+        const char* sigName = "UNKNOWN";
+        if (sig == SIGSEGV) sigName = "SIGSEGV";
+        else if (sig == SIGABRT) sigName = "SIGABRT";
+        else if (sig == SIGFPE) sigName = "SIGFPE";
+
+        // Use only async-signal-safe functions (write, open, close).
+        // Also write to the crash log file so the backtrace is easy to find.
+        const int logFd = open (crashLogPath.data(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+
+        auto safeWrite = [] (int fd, const char* s, size_t len)
+        {
+            size_t total = 0;
+            while (total < len)
+            {
+                ssize_t n = write (fd, s + total, len - total);
+                if (n <= 0) break;
+                total += (size_t) n;
+            }
+        };
+
+        const char header[] = "*** SIGNAL / CRASH: ";
+        const char trailer[] = " ***\n";
+
+        if (logFd >= 0)
+        {
+            safeWrite (logFd, header, sizeof(header) - 1);
+            safeWrite (logFd, sigName, strlen (sigName));
+            safeWrite (logFd, trailer, sizeof(trailer) - 1);
+        }
+
+        // Also write to stderr, which hosts like Bitwig capture in their
+        // engine log.
+        safeWrite (STDERR_FILENO, header, sizeof(header) - 1);
+        safeWrite (STDERR_FILENO, sigName, strlen (sigName));
+        safeWrite (STDERR_FILENO, trailer, sizeof(trailer) - 1);
+
+        void* callstack[64];
+        const int frames = backtrace (callstack, 64);
+
+        // Write backtrace to both stderr and the log file
+        backtrace_symbols_fd (callstack, frames, STDERR_FILENO);
+        if (logFd >= 0)
+        {
+            backtrace_symbols_fd (callstack, frames, logFd);
+            safeWrite (logFd, "\n", 1);
+            close (logFd);
+        }
+
+        ::_exit (1);
+    }
+
+    struct NeditLogInit
+    {
+        NeditLogInit()
+        {
+            initCrashLogPath();
+            neditLog ("--- plugin loaded ---");
+            ::signal (SIGSEGV, neditLogSignalHandler);
+            ::signal (SIGABRT, neditLogSignalHandler);
+            ::signal (SIGFPE,  neditLogSignalHandler);
+        }
+    } neditLogInit;
+
     // Snapshot-based undo action (Step 12): every slice-editing operation
     // (add/move/remove/exclude/reset) is captured as "manual+excluded
     // point state before" vs "...after", and undo/redo just re-applies
@@ -391,6 +506,7 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     : AudioProcessor (BusesProperties()
                            .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
+    neditLog ("Processor ctor");
     formatManager.registerBasicFormats();
     subdivisionProbabilities.assign (numNoteValueOptions, 1.0f);
 
@@ -416,7 +532,7 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     filterSweepFilter.setResonance (defaultFilterSweepResonance);
 }
 
-SlicerAudioProcessor::~SlicerAudioProcessor() = default;
+SlicerAudioProcessor::~SlicerAudioProcessor() { neditLog ("Processor dtor"); }
 
 void SlicerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
@@ -456,6 +572,32 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     juce::ScopedNoDenormals noDenormals;
     midiMessages.clear(); // transport-driven now — no MIDI in or out
     buffer.clear();
+
+    // Log if the audio thread had to wait more than 1ms for sampleLock
+    // (i.e., the message thread was holding it too long).
+    static int processBlockCount = 0;
+    if (++processBlockCount % 500 == 0) // every ~11ms at 44.1kHz/512
+    {
+        const auto before = juce::Time::getHighResolutionTicks();
+        const bool got = sampleLock.tryEnter();
+        const auto after = juce::Time::getHighResolutionTicks();
+        const double waitMs = (double) (after - before) * 1000.0 / (double) juce::Time::getHighResolutionTicksPerSecond();
+
+        if (got)
+        {
+            sampleLock.exit();
+            if (waitMs > 1.0)
+            {
+                char buf[128];
+                snprintf (buf, sizeof buf, "processBlock: lock wait %.2f ms", waitMs);
+                neditLog (buf);
+            }
+        }
+        else
+        {
+            neditLog ("processBlock: tryEnter FAILED");
+        }
+    }
 
     const juce::ScopedLock sl (sampleLock);
 
@@ -2372,21 +2514,26 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 juce::AudioProcessorEditor* SlicerAudioProcessor::createEditor()
 {
+    neditLog ("createEditor");
     return new SlicerAudioProcessorEditor (*this);
 }
 
 void SlicerAudioProcessor::getStateInformation (juce::MemoryBlock& /*destData*/)
 {
+    neditLog ("getStateInformation");
     // TODO once there are parameters worth persisting (loop length, slice
     // probabilities) — not wired up yet in this step.
 }
 
 void SlicerAudioProcessor::setStateInformation (const void* /*data*/, int /*sizeInBytes*/)
 {
+    neditLog ("setStateInformation: begin");
+    neditLog ("setStateInformation: done");
 }
 
 void SlicerAudioProcessor::loadSample (const juce::File& file)
 {
+    neditLog (("loadSample: " + file.getFullPathName()).toRawUTF8());
     std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
 
     if (reader == nullptr)
@@ -2394,6 +2541,14 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
 
     juce::AudioBuffer<float> newBuffer ((int) reader->numChannels, (int) reader->lengthInSamples);
     reader->read (&newBuffer, 0, (int) reader->lengthInSamples, 0, true, true);
+
+    {
+        char buf[256];
+        snprintf (buf, sizeof buf, "loadSample: read %d samples, %d ch, %.1f MB",
+                  (int) reader->lengthInSamples, (int) reader->numChannels,
+                  (float) reader->lengthInSamples * reader->numChannels * 4.0f / (1024.0f * 1024.0f));
+        neditLog (buf);
+    }
 
     {
         const juce::ScopedLock sl (sampleLock);

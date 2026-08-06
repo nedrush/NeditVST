@@ -112,6 +112,22 @@ namespace
         logFile.flush();
     }
 
+    // Resolved ONCE at init (via juce::File, which must never be called
+    // inside the signal handler) into a plain static buffer, so the handler
+    // below stays async-signal-safe AND the path stays portable across
+    // machines/OSes (no hardcoded /home/... path).
+    std::array<char, 1024> crashLogPath;
+
+    void initCrashLogPath()
+    {
+        auto path = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                        .getChildFile ("nedit_crash.log")
+                        .getFullPathName();
+
+        std::memset (crashLogPath.data(), 0, crashLogPath.size());
+        std::strncpy (crashLogPath.data(), path.toRawUTF8(), crashLogPath.size() - 1);
+    }
+
     void neditLogSignalHandler (int sig)
     {
         const char* sigName = "UNKNOWN";
@@ -121,8 +137,7 @@ namespace
 
         // Use only async-signal-safe functions (write, open, close).
         // Also write to the crash log file so the backtrace is easy to find.
-        const char logPath[] = "/home/olly/nedit_crash.log";
-        int logFd = open (logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        const int logFd = open (crashLogPath.data(), O_WRONLY | O_CREAT | O_APPEND, 0644);
 
         auto safeWrite = [] (int fd, const char* s, size_t len)
         {
@@ -141,17 +156,17 @@ namespace
         if (logFd >= 0)
         {
             safeWrite (logFd, header, sizeof(header) - 1);
-            safeWrite (logFd, sigName, strlen(sigName));
+            safeWrite (logFd, sigName, strlen (sigName));
             safeWrite (logFd, trailer, sizeof(trailer) - 1);
         }
 
-        // Also write to stderr for Bitwig's engine log
+        // Also write to stderr for hosts that capture it (Bitwig, etc.)
         safeWrite (STDERR_FILENO, header, sizeof(header) - 1);
-        safeWrite (STDERR_FILENO, sigName, strlen(sigName));
+        safeWrite (STDERR_FILENO, sigName, strlen (sigName));
         safeWrite (STDERR_FILENO, trailer, sizeof(trailer) - 1);
 
         void* callstack[64];
-        int frames = backtrace (callstack, 64);
+        const int frames = backtrace (callstack, 64);
 
         // Write backtrace to both stderr and the log file
         backtrace_symbols_fd (callstack, frames, STDERR_FILENO);
@@ -167,12 +182,12 @@ namespace
 
     struct NeditLogInit { NeditLogInit()
     {
+        initCrashLogPath();
         neditLog ("--- plugin loaded ---");
         ::signal (SIGSEGV, neditLogSignalHandler);
         ::signal (SIGABRT, neditLogSignalHandler);
         ::signal (SIGFPE,  neditLogSignalHandler);
     } } neditLogInit;
-}
 ```
 
 ### Step 3: PluginProcessor.cpp lifecycle logs
@@ -436,4 +451,9 @@ void WaveformDisplay::rebuildWaveformPeaks()
      are fighting over sampleLock.
    - **Crash backtrace** — the exact call stack at the point of failure,
      with function names and offsets for `addr2line` resolution.
-5. For symbol resolution: `addr2line -e NeditVST.so -f -C 0xOFFSET`
+5. For symbol resolution: `addr2line -e NeditVST.so -f -C 0xOFFSET` on
+   Linux. On macOS, `backtrace_symbols_fd` needs a dyld shared-cache
+   symbolication step; run `atos -o NeditVST.vst3/Contents/MacOS/NeditVST 0xOFFSET`
+   instead (or symbolicate the crash report the system generates).
+   macOS also requires the `<array>` include for the `crashLogPath`
+   buffer used by the handler.

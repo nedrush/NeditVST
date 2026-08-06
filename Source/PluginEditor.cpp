@@ -1,9 +1,24 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+namespace
+{
+    // Editor-side neditLog (no mutex, no timestamps) for ctor/dtor messages
+    // that fire before the processor's ofstream is guaranteed open. See
+    // docs/logging-system.md.
+    void neditLog (const char* msg)
+    {
+        auto path = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                        .getChildFile ("nedit_crash.log");
+        juce::String line = juce::String (msg) + "\n";
+        path.appendText (line);
+    }
+}
+
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), sequencerGrid (p), playbackStylePalette (p)
 {
+    neditLog ("Editor ctor: begin");
     addAndMakeVisible (controlsViewport);
     controlsViewport.setViewedComponent (&controlsContent, false); // we own it, don't let the viewport delete it
     controlsViewport.setScrollBarsShown (true, false); // vertical only, shown when needed
@@ -440,6 +455,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     // Widened from 600 (Step 31) to give the waveform display significantly
     // more horizontal room for zoom/pan and the beat-number grid.
     setSize (900, 780);
+    neditLog ("Editor ctor: done");
 
     if (processor.hasSample())
         updateAfterSampleOrSliceChange();
@@ -447,6 +463,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
 {
+    neditLog ("Editor dtor: begin");
     loadButton.removeListener (this);
     resetEditsButton.removeListener (this);
     undoButton.removeListener (this);

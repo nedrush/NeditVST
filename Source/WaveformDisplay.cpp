@@ -353,6 +353,8 @@ void WaveformDisplay::rebuildWaveformPeaks()
 
     waveformPeaks.resize ((size_t) width);
 
+    auto t0 = juce::Time::getHighResolutionTicks();
+
     // Step 31: peaks are computed over the current visible range mapped to
     // the component's pixel width, not the whole buffer -- each column's
     // [startSample, endSample) is a proportional slice of that range
@@ -386,6 +388,15 @@ void WaveformDisplay::rebuildWaveformPeaks()
         }
 
         waveformPeaks[(size_t) x] = { minVal, maxVal };
+    }
+
+    auto t1 = juce::Time::getHighResolutionTicks();
+    const double ms = (double) (t1 - t0) * 1000.0 / (double) juce::Time::getHighResolutionTicksPerSecond();
+    if (ms > 5.0)
+    {
+        char buf[128];
+        snprintf (buf, sizeof buf, "rebuildWaveformPeaks: %.1f ms (%d samples, %d ch, %d px)", ms, numSamples, numChannels, width);
+        fprintf (stderr, "%s\n", buf);
     }
 }
 
