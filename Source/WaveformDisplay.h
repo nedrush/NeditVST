@@ -114,6 +114,7 @@ private:
     void timerCallback() override; // drives the live playhead highlight, audition playhead, and Cmd-hover cue
 
     void rebuildWaveformPeaks();
+    void rebuildWaveformImage();
     int getSliceIndexAtX (int x) const; // -1 if no sample loaded or x is outside any slice
     int xToSample (int x) const;   // maps through [visibleStartSample, visibleEndSample), not the whole buffer
     float sampleToX (int sample) const; // inverse of xToSample -- may return a value outside [0, width) for an off-screen sample
@@ -147,6 +148,21 @@ private:
     // current component width — avoids re-scanning the whole sample
     // buffer on every paint call.
     std::vector<std::pair<float, float>> waveformPeaks;
+
+    // Rasterized waveform (dark background + the per-column peak lines),
+    // blitted every frame instead of re-issuing ~900 edge-table lines.
+    // Only invalidated when the peaks are rebuilt (zoom/pan/resize/load).
+    juce::Image waveformImage;
+    bool waveformImageDirty = true;
+
+    // rebuildWaveformPeaks() cache key: the peaks depend only on the
+    // visible range, the component width, and the loaded buffer. Trim
+    // drags and other refresh() callers that leave the view unchanged
+    // short-circuit the O(visible-range) scan via this.
+    int cachedPeakStart = -1;
+    int cachedPeakEnd = -1;
+    int cachedPeakWidth = -1;
+    int cachedPeakGeneration = -1;
 
     bool isDraggingOver = false;      // true while a file is hovering during drag-and-drop
     int draggingManualPointId = -1;   // -1 = not currently dragging a manual point

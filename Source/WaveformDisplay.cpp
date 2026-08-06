@@ -72,8 +72,17 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
     const auto bounds = getLocalBounds().toFloat();
 
-    g.setColour (juce::Colours::black.withAlpha (0.35f));
-    g.fillRect (bounds);
+    // The waveform's static layers (background + per-column peaks) are
+    // rasterized into a cached Image and blitted here -- re-issuing ~900
+    // edge-table lines every 30fps frame was the dominant idle cost (the
+    // "redraw bug" class). The cache is invalidated whenever the peaks are
+    // rebuilt (zoom/pan/resize/load); everything overlay-ish stays
+    // per-frame because it scales with slice count, not sample count.
+    if (waveformImageDirty || waveformImage.getWidth() != getWidth()
+        || waveformImage.getHeight() != getHeight())
+        rebuildWaveformImage();
+
+    g.drawImageAt (waveformImage, 0, 0);
 
     if (isDraggingOver)
     {
@@ -88,20 +97,6 @@ void WaveformDisplay::paint (juce::Graphics& g)
         g.drawFittedText ("Drag and drop a sample here, or use Load Sample above",
                            getLocalBounds(), juce::Justification::centred, 2);
         return;
-    }
-
-    // --- Waveform itself ---
-    const float midY = bounds.getCentreY();
-    const float halfHeight = bounds.getHeight() * 0.45f;
-
-    g.setColour (juce::Colours::cyan.withAlpha (0.8f));
-
-    for (int x = 0; x < (int) waveformPeaks.size(); ++x)
-    {
-        const auto& peak = waveformPeaks[(size_t) x];
-        const float y1 = midY - peak.second * halfHeight;
-        const float y2 = midY - peak.first * halfHeight;
-        g.drawVerticalLine (x, y1, y2);
     }
 
     // --- Trim markers (Step 23): dim everything outside [trimStart, trimEnd)
@@ -347,19 +342,30 @@ void WaveformDisplay::rebuildWaveformPeaks()
 {
     const Perf::ScopedSection perf ("rebuildWaveformPeaks");
 
-    waveformPeaks.clear();
-
     if (! processor.hasSample())
         return;
+
+    const int width = juce::jmax (1, getWidth());
+    const int generation = processor.getSampleGeneration();
+
+    // Peaks depend ONLY on [visibleStartSample, visibleEndSample), the
+    // component width, and the loaded buffer. Many refresh() callers --
+    // notably trim-handle drags -- don't change any of those, so skip the
+    // O(visible-range) scan entirely and keep the existing cache.
+    if (visibleStartSample == cachedPeakStart && visibleEndSample == cachedPeakEnd
+        && width == cachedPeakWidth && generation == cachedPeakGeneration)
+        return;
+
+    waveformImageDirty = true;
 
     const auto& buffer = processor.getSampleBuffer();
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
-    const int width = juce::jmax (1, getWidth());
 
     if (numSamples == 0 || numChannels == 0)
         return;
 
+    waveformPeaks.clear();
     waveformPeaks.resize ((size_t) width);
 
     // Step 31: peaks are computed over the current visible range mapped to
@@ -395,6 +401,41 @@ void WaveformDisplay::rebuildWaveformPeaks()
         }
 
         waveformPeaks[(size_t) x] = { minVal, maxVal };
+    }
+
+    cachedPeakStart = visibleStartSample;
+    cachedPeakEnd = visibleEndSample;
+    cachedPeakWidth = width;
+    cachedPeakGeneration = generation;
+}
+
+void WaveformDisplay::rebuildWaveformImage()
+{
+    const Perf::ScopedSection perf ("rebuildWaveformImage");
+
+    waveformImage = juce::Image (juce::Image::ARGB, juce::jmax (1, getWidth()), juce::jmax (1, getHeight()), true);
+    waveformImageDirty = false;
+
+    juce::Graphics g (waveformImage);
+    const auto bounds = waveformImage.getBounds().toFloat();
+
+    g.setColour (juce::Colours::black.withAlpha (0.35f));
+    g.fillRect (bounds);
+
+    if (! processor.hasSample())
+        return;
+
+    const float midY = bounds.getCentreY();
+    const float halfHeight = bounds.getHeight() * 0.45f;
+
+    g.setColour (juce::Colours::cyan.withAlpha (0.8f));
+
+    for (int x = 0; x < (int) waveformPeaks.size(); ++x)
+    {
+        const auto& peak = waveformPeaks[(size_t) x];
+        const float y1 = midY - peak.second * halfHeight;
+        const float y2 = midY - peak.first * halfHeight;
+        g.drawVerticalLine (x, y1, y2);
     }
 }
 
@@ -594,15 +635,20 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
         const int beforeTrimStart = processor.getTrimStartSample();
         const bool snap = ! event.mods.isShiftDown();
         processor.setTrimStartSample (xToSample (event.x), snap);
-        refresh();
+        const bool changed = processor.getTrimStartSample() != beforeTrimStart;
 
-        // Only fire on an ACTUAL change (Step 33) -- a drag that's
-        // clamped at the same position every frame (e.g. pinned against
-        // the other handle, or against the buffer's own edge) shouldn't
-        // keep re-flagging Loop Length as stale for a value that never
-        // moved.
-        if (onTrimChanged && processor.getTrimStartSample() != beforeTrimStart)
+        // Exactly ONE rebuild+repaint per drag event: onTrimChanged() routes
+        // through updateAfterSampleOrSliceChange() → refresh() (rebuild +
+        // repaint + label updates). When the value didn't actually move
+        // (clamped), autoPanIfNearEdge may still have panned the view, so a
+        // minimal rebuild is still needed -- but never both.
+        if (changed && onTrimChanged)
             onTrimChanged();
+        else
+        {
+            rebuildWaveformPeaks();
+            repaint();
+        }
 
         return;
     }
@@ -613,10 +659,15 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
         const int beforeTrimEnd = processor.getTrimEndSample();
         const bool snap = ! event.mods.isShiftDown();
         processor.setTrimEndSample (xToSample (event.x), snap);
-        refresh();
+        const bool changed = processor.getTrimEndSample() != beforeTrimEnd;
 
-        if (onTrimChanged && processor.getTrimEndSample() != beforeTrimEnd)
+        if (changed && onTrimChanged)
             onTrimChanged();
+        else
+        {
+            rebuildWaveformPeaks();
+            repaint();
+        }
 
         return;
     }

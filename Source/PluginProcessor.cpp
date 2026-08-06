@@ -2407,6 +2407,8 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
 
         transientDetector.analyze (sampleBuffer, sampleSampleRate);
 
+        ++sampleGeneration; // invalidate UI caches keyed on the loaded buffer
+
         // Trim markers (Step 23): default to the full sample length, so
         // behaviour is unchanged until the user actually drags a handle.
         trimStartSample.store (0);

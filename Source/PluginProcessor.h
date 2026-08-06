@@ -63,6 +63,12 @@ public:
     juce::String getLoadedFileName() const { return loadedFileName; }
     const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
 
+    // Incremented on every loadSample() so UI caches keyed on the loaded
+    // buffer (e.g. WaveformDisplay's peak cache) can detect a replacement
+    // even when the new file happens to be the same length as the old.
+    // Message-thread only (loads and UI reads both happen there).
+    int getSampleGeneration() const { return sampleGeneration; }
+
     // The loaded sample's own sample rate (not the host's) — needed by
     // WaveformDisplay's zoom (Step 31) to convert a minimum-zoom duration
     // in milliseconds into source samples.
@@ -1462,6 +1468,7 @@ private:
     juce::AudioFormatManager formatManager;
 
     juce::AudioBuffer<float> sampleBuffer;
+    int sampleGeneration = 0;
     double sampleSampleRate = 44100.0;
     bool sampleLoaded = false;
     juce::String loadedFileName;
