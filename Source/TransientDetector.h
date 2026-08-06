@@ -38,8 +38,8 @@ struct Slice
 // run either the original peak-picking pipeline (`peak`, threshold-and-hold
 // on the derivative of a slow-attack envelope — everything described in the
 // file header above) or a new onset pipeline (`onset`) that instead looks
-// for the point amplitude first starts climbing out of near-silence, using
-// a much faster envelope/derivative pair so it isn't blurred by the slow
+// for where amplitude first starts rising out of its local trough, using a
+// much faster envelope/derivative pair so it isn't blurred by the slow
 // envelope's own attack smoothing, then snaps that point to the nearest
 // zero-crossing for a click-free cut. Both run on every analyze() call so
 // the UI can show both marker sets at once for comparison; the toggle in
@@ -143,5 +143,4 @@ private:
     std::vector<float> onsetDerivative;
     float onsetGlobalMaxDerivative = 0.0f;
     float onsetNoiseFloor = 0.0f;
-    float onsetGlobalMaxAmplitude = 0.0f; // used to derive a "near silence" floor for walking a threshold crossing back to the true rise start
 };

@@ -46,7 +46,6 @@ void TransientDetector::analyze (const juce::AudioBuffer<float>& buffer, double 
     onsetDerivative.clear();
     onsetGlobalMaxDerivative = 0.0f;
     onsetNoiseFloor = 0.0f;
-    onsetGlobalMaxAmplitude = 0.0f;
 
     numSamples = buffer.getNumSamples();
     analyzedSampleRate = sampleRate;
@@ -154,9 +153,6 @@ void TransientDetector::analyze (const juce::AudioBuffer<float>& buffer, double 
         const float coeff = (rectified > onsetEnv) ? onsetAttackCoeff : onsetReleaseCoeff;
         onsetEnv += coeff * (rectified - onsetEnv);
         onsetEnvelope[(size_t) i] = onsetEnv;
-
-        if (onsetEnv > onsetGlobalMaxAmplitude)
-            onsetGlobalMaxAmplitude = onsetEnv;
     }
 
     onsetDerivative.resize ((size_t) numSamples, 0.0f);
@@ -222,11 +218,12 @@ std::vector<int> TransientDetector::pickPeakOnsets (float sensitivity, float hol
 // header). Finds where the fast onset-derivative first crosses the
 // sensitivity-scaled threshold (a much snappier signal than the peak
 // pipeline's slow-envelope derivative), then walks that crossing BACKWARD
-// to the last sample the fast envelope was still at-or-below a "near
-// silence" floor — i.e. the actual start of the rise, not the point an
-// arbitrary threshold happened to be crossed — and finally snaps to the
-// nearest zero-crossing in the raw signal for a click-free cut. Delete
-// alongside the rest of the onset pipeline once the decision is made.
+// along the mirrored rise to the last local minimum of the fast envelope —
+// i.e. the actual start of the rise, not the point an arbitrary threshold
+// happened to be crossed, and not a fixed distance behind it — and finally
+// snaps to the nearest zero-crossing in the raw signal for a click-free
+// cut. Delete alongside the rest of the onset pipeline once the decision
+// is made.
 std::vector<int> TransientDetector::pickOnsetOnsets (float sensitivity, float holdoffMs,
                                                        int rangeStartSample, int rangeEndSample) const
 {
@@ -238,14 +235,7 @@ std::vector<int> TransientDetector::pickOnsetOnsets (float sensitivity, float ho
     const float threshold = onsetGlobalMaxDerivative
                              - sensitivity * (onsetGlobalMaxDerivative - onsetNoiseFloor);
 
-    // "Near silence" for the walk-back below: 5% of the loudest point in
-    // the whole analysed buffer. An amplitude floor, not a derivative one
-    // (onsetNoiseFloor is in derivative units) — walking back is about
-    // "has the level dropped to nothing," not "has the rate of change."
-    const float silenceFloor = 0.05f * onsetGlobalMaxAmplitude;
-
     const int holdoffSamples = (int) ((holdoffMs / 1000.0f) * (float) analyzedSampleRate);
-    const int maxWalkBackSamples = (int) (0.03 * analyzedSampleRate); // ~30ms cap -- avoids a runaway backward search on pathological/DC-heavy material
     const int zeroCrossingSearchRadius = (int) (0.002 * analyzedSampleRate); // ~2ms
 
     int lastOnset = rangeStartSample - holdoffSamples;
@@ -257,14 +247,33 @@ std::vector<int> TransientDetector::pickOnsetOnsets (float sensitivity, float ho
             && onsetDerivative[(size_t) (i - 1)] <= threshold
             && (i - lastOnset) >= holdoffSamples)
         {
-            // Walk backward from the threshold crossing to the actual start
-            // of the rise, not the point the rise-rate happened to cross an
-            // arbitrary threshold.
+            // Walk the mirrored rise back to its base: the last local
+            // minimum of the envelope before the crossing -- the deepest
+            // point (true start) of THIS rise. The previous version walked
+            // back to a fixed "5% of the loudest point in the whole buffer"
+            // floor, which never existed between hits in dense/loud material,
+            // so the walk just ran into a fixed 30ms cap and landed the
+            // onset up to 30ms early -- and when the walk crossed the
+            // previous onset's territory, the monotonic clamp below
+            // collapsed the two into near-duplicate/1-sample slices.
+            // Walking to the last local minimum is correct whether the
+            // trough is real silence or just a dip in a loud bed, and it is
+            // bounded by the previous onset, so it can never claim territory
+            // already taken by the last cut.
             int riseStart = i;
-            const int walkBackLimit = juce::jmax (rangeStartSample, i - maxWalkBackSamples);
+            const int walkBackLimit = juce::jmax (rangeStartSample, lastFinalOnset + 1);
 
-            while (riseStart > walkBackLimit && onsetEnvelope[(size_t) riseStart] > silenceFloor)
+            while (riseStart > walkBackLimit
+                   && onsetEnvelope[(size_t) (riseStart - 1)] < onsetEnvelope[(size_t) riseStart])
                 --riseStart;
+
+            // No local minimum found before the previous cut: the envelope
+            // kept descending all the way back, so this crossing is the tail
+            // of the previous onset's own rise, not an independent transient.
+            // Pinning it at lastFinalOnset + 1 would just recreate the
+            // 1-sample slices, so skip it instead.
+            if (riseStart == walkBackLimit)
+                continue;
 
             const int snapped = snapToNearestZeroCrossing (riseStart, zeroCrossingSearchRadius);
             const int finalOnset = juce::jlimit (juce::jmax (rangeStartSample, lastFinalOnset + 1),
