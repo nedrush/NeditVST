@@ -149,6 +149,33 @@ private:
     // buffer on every paint call.
     std::vector<std::pair<float, float>> waveformPeaks;
 
+    // R2: multiresolution min/max pyramid over the whole loaded buffer.
+    // Built lazily on the first peak rebuild after a load (keyed on the
+    // sample generation), then any zoom/pan/resize query whose columns
+    // span >= peakPyramidBase samples resolves each column in O(1) — three
+    // aligned-block lookups — instead of re-scanning O(visible range).
+    // Zoom is therefore O(width) at every level; the only raw-scan path
+    // left is deep zoom-in (fewer than peakPyramidBase samples per pixel),
+    // which is bounded by width * peakPyramidBase sample visits and cheap
+    // by construction. Block sizes are powers of two starting at
+    // peakPyramidBase samples; level k's blocks fold level k-1's in pairs.
+    // A column query picks the largest level whose block fits the span and
+    // combines the (at most three) aligned blocks covering it — the result
+    // is the exact min/max of a window rounded out to block boundaries, i.e.
+    // within one column-width of the pixel-exact answer. Safe on the
+    // message thread only, same as rebuildWaveformPeaks().
+    struct MinMax
+    {
+        float minVal = 0.0f;
+        float maxVal = 0.0f;
+    };
+    static constexpr int peakPyramidBase = 64;
+    std::vector<std::vector<MinMax>> peakPyramid;
+    int peakPyramidGeneration = -1;
+
+    void buildPeakPyramid();
+    MinMax queryPeaks (int startSample, int endSample) const;
+
     // Rasterized waveform (dark background + the per-column peak lines),
     // blitted every frame instead of re-issuing ~900 edge-table lines.
     // Only invalidated when the peaks are rebuilt (zoom/pan/resize/load).

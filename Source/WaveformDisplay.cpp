@@ -365,6 +365,11 @@ void WaveformDisplay::rebuildWaveformPeaks()
     if (numSamples == 0 || numChannels == 0)
         return;
 
+    // R2: the pyramid depends only on the loaded buffer, so it's rebuilt
+    // exactly once per sample generation (i.e. once per loadSample()).
+    if (peakPyramidGeneration != generation)
+        buildPeakPyramid();
+
     waveformPeaks.clear();
     waveformPeaks.resize ((size_t) width);
 
@@ -387,6 +392,96 @@ void WaveformDisplay::rebuildWaveformPeaks()
         const int endSample = (startSample >= numSamples) ? startSample
                                                             : juce::jlimit (startSample + 1, numSamples, rawEnd);
 
+        // R2: column peaks come from the pyramid whenever the span is big
+        // enough to hit a level; otherwise (deep zoom-in) queryPeaks falls
+        // back to the raw per-sample scan, bounded by peakPyramidBase
+        // samples. Either way the visible-range scan is gone from the zoom
+        // path.
+        const auto p = queryPeaks (startSample, endSample);
+        waveformPeaks[(size_t) x] = { p.minVal, p.maxVal };
+    }
+
+    cachedPeakStart = visibleStartSample;
+    cachedPeakEnd = visibleEndSample;
+    cachedPeakWidth = width;
+    cachedPeakGeneration = generation;
+}
+
+void WaveformDisplay::buildPeakPyramid()
+{
+    const Perf::ScopedSection perf ("buildPeakPyramid");
+
+    peakPyramid.clear();
+
+    const auto& buffer = processor.getSampleBuffer();
+    const int numSamples = buffer.getNumSamples();
+    const int numChannels = buffer.getNumChannels();
+
+    if (numSamples == 0 || numChannels == 0)
+        return;
+
+    // Level 0: one {min, max} per peakPyramidBase-sample block. Higher
+    // levels fold the previous level's blocks in pairs. Every block at
+    // level k covers exactly [i * blockSize, min (numSamples, (i+1) * blockSize)),
+    // so tail blocks stay exact over their (possibly short) real range.
+    std::vector<MinMax> level0 ((size_t) ((numSamples + peakPyramidBase - 1) / peakPyramidBase));
+
+    for (size_t b = 0; b < level0.size(); ++b)
+    {
+        const int s0 = (int) b * peakPyramidBase;
+        const int s1 = juce::jmin (numSamples, s0 + peakPyramidBase);
+
+        float minVal = 0.0f;
+        float maxVal = 0.0f;
+
+        for (int s = s0; s < s1; ++s)
+        {
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                const float sample = buffer.getSample (ch, s);
+                minVal = juce::jmin (minVal, sample);
+                maxVal = juce::jmax (maxVal, sample);
+            }
+        }
+
+        level0[b] = { minVal, maxVal };
+    }
+
+    peakPyramid.push_back (std::move (level0));
+
+    while (peakPyramid.back().size() > 1)
+    {
+        const auto& prev = peakPyramid.back();
+        std::vector<MinMax> level ((prev.size() + 1) / 2);
+
+        for (size_t i = 0; i < level.size(); ++i)
+        {
+            const MinMax a = prev[i * 2];
+            const MinMax b = (i * 2 + 1 < prev.size()) ? prev[i * 2 + 1] : MinMax {};
+
+            level[i] = { juce::jmin (a.minVal, b.minVal), juce::jmax (a.maxVal, b.maxVal) };
+        }
+
+        peakPyramid.push_back (std::move (level));
+    }
+
+    peakPyramidGeneration = processor.getSampleGeneration();
+}
+
+WaveformDisplay::MinMax WaveformDisplay::queryPeaks (int startSample, int endSample) const
+{
+    if (endSample <= startSample)
+        return {};
+
+    const int span = endSample - startSample;
+
+    // Deep zoom-in: fewer samples per pixel than one pyramid block. The raw
+    // scan is bounded by peakPyramidBase samples per column, trivially cheap.
+    if (span < peakPyramidBase)
+    {
+        const auto& buffer = processor.getSampleBuffer();
+        const int numChannels = buffer.getNumChannels();
+
         float minVal = 0.0f;
         float maxVal = 0.0f;
 
@@ -400,13 +495,38 @@ void WaveformDisplay::rebuildWaveformPeaks()
             }
         }
 
-        waveformPeaks[(size_t) x] = { minVal, maxVal };
+        return { minVal, maxVal };
     }
 
-    cachedPeakStart = visibleStartSample;
-    cachedPeakEnd = visibleEndSample;
-    cachedPeakWidth = width;
-    cachedPeakGeneration = generation;
+    // Largest level whose block size still fits the span -- then the column
+    // straddles at most three aligned blocks, so this is a handful of
+    // lookups at any zoom-out level. The result is the exact min/max of the
+    // window rounded out to block boundaries, at most one column-width wider
+    // than the pixel-exact window.
+    int blockSize = peakPyramidBase;
+    size_t levelIndex = 0;
+
+    while ((juce::int64) blockSize * 2 <= span)
+    {
+        blockSize <<= 1;
+        ++levelIndex;
+    }
+
+    const auto& level = peakPyramid[levelIndex];
+
+    const int i0 = startSample / blockSize;
+    const int i1 = (endSample - 1) / blockSize;
+
+    MinMax result {};
+
+    for (int i = i0; i <= i1; ++i)
+    {
+        const auto& p = level[(size_t) i];
+        result.minVal = juce::jmin (result.minVal, p.minVal);
+        result.maxVal = juce::jmax (result.maxVal, p.maxVal);
+    }
+
+    return result;
 }
 
 void WaveformDisplay::rebuildWaveformImage()
