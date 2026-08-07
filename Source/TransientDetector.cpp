@@ -1,4 +1,7 @@
 #include "TransientDetector.h"
+#include <algorithm>
+#include <complex>
+#include <juce_dsp/juce_dsp.h>
 
 namespace
 {
@@ -43,10 +46,11 @@ void TransientDetector::analyze (const juce::AudioBuffer<float>& buffer, double 
     // TEMPORARY (onset pipeline) resets — see DetectionMethod in the header.
     signedMonoSignal.clear();
     onsetEnvelope.clear();
-    onsetDerivative.clear();
-    onsetGlobalMaxDerivative = 0.0f;
-    onsetNoiseFloor = 0.0f;
-    onsetGlobalMaxAmplitude = 0.0f;
+    spectralFlux.clear();
+    spectralCentroid.clear();
+    spectralBinCount = fftSize / 2 + 1;
+    fftDataRead.assign ((size_t) fftSize, {});
+    fftDataWrite.assign ((size_t) fftSize, {});
 
     numSamples = buffer.getNumSamples();
     analyzedSampleRate = sampleRate;
@@ -154,35 +158,64 @@ void TransientDetector::analyze (const juce::AudioBuffer<float>& buffer, double 
         const float coeff = (rectified > onsetEnv) ? onsetAttackCoeff : onsetReleaseCoeff;
         onsetEnv += coeff * (rectified - onsetEnv);
         onsetEnvelope[(size_t) i] = onsetEnv;
-
-        if (onsetEnv > onsetGlobalMaxAmplitude)
-            onsetGlobalMaxAmplitude = onsetEnv;
     }
 
-    onsetDerivative.resize ((size_t) numSamples, 0.0f);
+    // --- TEMPORARY (onset pipeline): spectral layer per FAST analysis window.
+    // Spectral flux (L2 norm of the positive magnitude difference between
+    // adjacent frames) is the classic broadband onset detector — a transient
+    // adds energy across many bins at once, so the flux spikes; the sustained
+    // low-fundamental ripple that fooled the fast-envelope derivative adds
+    // almost nothing frame-to-frame and stays flat. Spectral centroid (the
+    // magnitude-weighted mean bin) is a coarse spectral-position cue: attacks
+    // tend to be broadband (high centroid) while pitches / tails are narrow.
+    // Both arrays are one-per-FRAME (hop-size resolution) — coarse vs. the
+    // per-sample envelopes; callers index by sample / hop. Delete with the
+    // onset pipeline once the right feature is validated and wired in.
+    const int hopSize = fftHopSamples;
+    const int numFrames = juce::jmax (0, (numSamples - fftSize + hopSize) / hopSize);
 
-    double sumPositiveOnsetDerivative = 0.0;
-    int numPositiveOnsetDerivative = 0;
+    spectralFlux.resize ((size_t) numFrames, 0.0f);
+    spectralCentroid.resize ((size_t) numFrames, 0.0f);
 
-    for (int i = 1; i < numSamples; ++i)
+    std::vector<float> prevMag (spectralBinCount, 0.0f);
+    std::vector<float> window (static_cast<size_t> (fftSize));
+
+    for (int w = 0; w < fftSize; ++w)
+        window[(size_t) w] = 0.5f * (1.0f - std::cos (2.0f * juce::MathConstants<float>::pi * (float) w / (float) (fftSize - 1)));
+
+    for (int frame = 0; frame < numFrames; ++frame)
     {
-        const float d = onsetEnvelope[(size_t) i] - onsetEnvelope[(size_t) (i - 1)];
-        const float positiveD = juce::jmax (0.0f, d);
-        onsetDerivative[(size_t) i] = positiveD;
+        const int center = frame * hopSize;
 
-        if (positiveD > onsetGlobalMaxDerivative)
-            onsetGlobalMaxDerivative = positiveD;
+        std::copy_n (signedMonoSignal.data() + center, fftSize, fftDataRead.data());
 
-        if (positiveD > 0.0f)
+        for (int w = 0; w < fftSize; ++w)
+            fftDataRead[(size_t) w] *= window[(size_t) w];
+
+        fft.perform (fftDataRead.data(), fftDataWrite.data(), false);
+
+        double curFlux = 0.0;
+        double curCentroid = 0.0;
+        double totalMag = 0.0;
+
+        for (int b = 0; b < spectralBinCount; ++b)
         {
-            sumPositiveOnsetDerivative += positiveD;
-            ++numPositiveOnsetDerivative;
-        }
-    }
+            const float re = fftDataWrite[(size_t) b].real();
+            const float im = fftDataWrite[(size_t) b].imag();
+            const float mag = std::sqrt (re * re + im * im);
+            const float diff = mag - prevMag[(size_t) b];
 
-    onsetNoiseFloor = (numPositiveOnsetDerivative > 0)
-                          ? (float) (sumPositiveOnsetDerivative / (double) numPositiveOnsetDerivative)
-                          : 0.0f;
+            if (diff > 0.0f)
+                curFlux += diff * diff;
+
+            curCentroid += (float) b * mag;
+            totalMag += mag;
+            prevMag[(size_t) b] = mag;
+        }
+
+        spectralFlux[(size_t) frame] = (float) std::sqrt (curFlux);
+        spectralCentroid[(size_t) frame] = totalMag > 0.0 ? (float) (curCentroid / totalMag) : 0.0f;
+    }
 }
 
 std::vector<int> TransientDetector::pickPeakOnsets (float sensitivity, float holdoffMs,
@@ -219,14 +252,23 @@ std::vector<int> TransientDetector::pickPeakOnsets (float sensitivity, float hol
 }
 
 // TEMPORARY (Onset vs. Peak comparison tool — see DetectionMethod in the
-// header). Finds where the fast onset-derivative first crosses the
-// sensitivity-scaled threshold (a much snappier signal than the peak
-// pipeline's slow-envelope derivative), then walks that crossing BACKWARD
-// to the last sample the fast envelope was still at-or-below a "near
-// silence" floor — i.e. the actual start of the rise, not the point an
-// arbitrary threshold happened to be crossed — and finally snaps to the
-// nearest zero-crossing in the raw signal for a click-free cut. Delete
-// alongside the rest of the onset pipeline once the decision is made.
+// header). HYBRID detector: the slow peak-pipeline derivative decides THAT
+// a hit happened, the fast onset envelope decides WHERE to cut.
+//
+// Detection previously thresholded the FAST envelope's derivative, but that
+// envelope's 2ms release ripples with every cycle of low-frequency material
+// (a 60Hz fundamental has a 16ms period), so every cycle's rise was a false-
+// positive candidate. The slow envelope (1ms/50ms) is structurally immune to
+// per-cycle ripple, so its derivative crossings — identical threshold and
+// holdoff logic to pickPeakOnsets, so detection COUNT matches Peak exactly —
+// pick the hits. Placement then uses the fast envelope, which the slow one
+// is too blurred for: find the fast attack peak near the slow rise, take the
+// deepest fast valley before that peak (the true start of the attack), and
+// snap to the nearest zero-crossing for a click-free cut.
+//
+// The spectral features computed in analyze() (flux / centroid) are exposed
+// for the debug overlay; once the right feature is validated against real
+// material it becomes the confirmation gate for the crossings here.
 std::vector<int> TransientDetector::pickOnsetOnsets (float sensitivity, float holdoffMs,
                                                        int rangeStartSample, int rangeEndSample) const
 {
@@ -235,44 +277,75 @@ std::vector<int> TransientDetector::pickOnsetOnsets (float sensitivity, float ho
     if (sensitivity <= 0.0f)
         return onsets;
 
-    const float threshold = onsetGlobalMaxDerivative
-                             - sensitivity * (onsetGlobalMaxDerivative - onsetNoiseFloor);
-
-    // "Near silence" for the walk-back below: 5% of the loudest point in
-    // the whole analysed buffer. An amplitude floor, not a derivative one
-    // (onsetNoiseFloor is in derivative units) — walking back is about
-    // "has the level dropped to nothing," not "has the rate of change."
-    const float silenceFloor = 0.05f * onsetGlobalMaxAmplitude;
+    // Same threshold as pickPeakOnsets — the slow pipeline's statistics.
+    const float threshold = globalMaxDerivative
+                             - sensitivity * (globalMaxDerivative - noiseFloor);
 
     const int holdoffSamples = (int) ((holdoffMs / 1000.0f) * (float) analyzedSampleRate);
-    const int maxWalkBackSamples = (int) (0.03 * analyzedSampleRate); // ~30ms cap -- avoids a runaway backward search on pathological/DC-heavy material
     const int zeroCrossingSearchRadius = (int) (0.002 * analyzedSampleRate); // ~2ms
+    const int placementPadSamples = (int) (0.001 * analyzedSampleRate); // ~1ms of slack around the slow rise's base
 
     int lastOnset = rangeStartSample - holdoffSamples;
-    int lastFinalOnset = rangeStartSample - 1; // guards monotonic ordering after the walk-back/snap below can shift a crossing earlier than the previous one's
+    int lastFinalOnset = rangeStartSample - 1; // guards monotonic ordering after the placement/snap below can shift a crossing earlier than the previous one's
 
     for (int i = juce::jmax (1, rangeStartSample); i < rangeEndSample; ++i)
     {
-        if (onsetDerivative[(size_t) i] > threshold
-            && onsetDerivative[(size_t) (i - 1)] <= threshold
+        if (derivative[(size_t) i] > threshold
+            && derivative[(size_t) (i - 1)] <= threshold
             && (i - lastOnset) >= holdoffSamples)
         {
-            // Walk backward from the threshold crossing to the actual start
-            // of the rise, not the point the rise-rate happened to cross an
-            // arbitrary threshold.
-            int riseStart = i;
-            const int walkBackLimit = juce::jmax (rangeStartSample, i - maxWalkBackSamples);
+            const int walkBackLimit = juce::jmax (rangeStartSample, lastFinalOnset + 1);
 
-            while (riseStart > walkBackLimit && onsetEnvelope[(size_t) riseStart] > silenceFloor)
-                --riseStart;
+            // 1) Walk the SLOW envelope's mirrored rise back to its base —
+            // a stable anchor near the attack (the slow envelope barely
+            // ripples, so this can't get lost the way the fast one could).
+            int slowBase = i;
+
+            while (slowBase > walkBackLimit
+                   && envelope[(size_t) (slowBase - 1)] < envelope[(size_t) slowBase])
+                --slowBase;
+
+            // Rise began at/before the previous cut: this crossing is the
+            // tail of the previous onset's own rise, not an independent
+            // transient — skip rather than pin it into a 1-sample slice.
+            if (slowBase == walkBackLimit)
+                continue;
+
+            // 2) Fast attack peak near the slow rise. The slow crossing lags
+            // the true attack (1ms attack smoothing plus however far up the
+            // rise the threshold sits), so the fast envelope may already be
+            // past its peak — search the window rather than walking blindly.
+            const int windowStart = juce::jmax (walkBackLimit, slowBase - placementPadSamples);
+            int fastPeak = windowStart;
+
+            for (int s = windowStart + 1; s <= i; ++s)
+                if (onsetEnvelope[(size_t) s] > onsetEnvelope[(size_t) fastPeak])
+                    fastPeak = s;
+
+            // 3) Deepest fast valley before the attack peak = the true start
+            // of the attack. Last occurrence of the minimum, so the cut hugs
+            // the attack rather than sitting at the far edge of a flat trough.
+            int riseStart = windowStart;
+
+            for (int s = windowStart + 1; s <= fastPeak; ++s)
+                if (onsetEnvelope[(size_t) s] <= onsetEnvelope[(size_t) riseStart])
+                    riseStart = s;
 
             const int snapped = snapToNearestZeroCrossing (riseStart, zeroCrossingSearchRadius);
-            const int finalOnset = juce::jlimit (juce::jmax (rangeStartSample, lastFinalOnset + 1),
-                                                  rangeEndSample - 1, snapped);
+            const int lowBound = juce::jmax (rangeStartSample, lastFinalOnset + 1);
+
+            // The snap can only move ~2ms, but if it (or the placement)
+            // landed at/before the previous cut, clamping would recreate the
+            // 1-sample slices — skip the degenerate case instead. (Clamping
+            // TO the range start is fine: that boundary always exists.)
+            if (snapped < lowBound && lowBound > rangeStartSample)
+                continue;
+
+            const int finalOnset = juce::jlimit (lowBound, rangeEndSample - 1, snapped);
 
             onsets.push_back (finalOnset);
             lastFinalOnset = finalOnset;
-            lastOnset = i; // holdoff is measured from the raw crossing, not the (possibly earlier) walked-back/snapped position
+            lastOnset = i; // holdoff is measured from the raw crossing, not the (earlier) placed/snapped position
         }
     }
 

@@ -95,6 +95,14 @@ public:
     void zoomToTrims(); // [trimStart, trimEnd), plus a small margin so the handles themselves stay grabbable
     void resetZoom();   // back to [0, totalSamples) — fully zoomed out
 
+    // TEMPORARY (onset-vs-peak debug view): overlays the cached envelope
+    // follower curves (white = slow peak envelope, gold = fast onset
+    // envelope) on the waveform, and while it's on, suppresses the
+    // per-slice probability faders — both their drawing and their mouse
+    // interaction — so detection can be inspected without probability
+    // edits getting in the way. Delete alongside the onset pipeline.
+    void setDebugEnvelopesEnabled (bool enabled);
+
     // Set by the editor — called after a drag-and-drop load, since that
     // bypasses the editor's own Load Sample button and its follow-up UI
     // updates (status text, BPM display).
@@ -151,6 +159,9 @@ private:
     bool isDraggingOver = false;      // true while a file is hovering during drag-and-drop
     int draggingManualPointId = -1;   // -1 = not currently dragging a manual point
     int dragStartSamplePosition = -1; // where a manual point was before the current drag, for undo
+
+    // TEMPORARY (onset-vs-peak debug view — see setDebugEnvelopesEnabled()).
+    bool debugEnvelopesEnabled = false;
 
     // Trim markers (Step 23) — which handle (if any) the current drag is
     // moving. Continuous parameter, not undo-tracked (same bucket as
