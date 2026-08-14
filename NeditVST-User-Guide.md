@@ -190,7 +190,57 @@ Switch **Trigger Mode** to **Sequenced** to reveal the step grid.
     whole extended step as one motion — even if Subdivide is also
     retriggering the slice underneath it.
 
-## 8. Known limitations (this build)
+## 8. Performance Mode
+
+Switch **Trigger Mode** to **Performance** for a completely different way
+of working — instead of one continuous generative/sequenced engine,
+you define several hand-picked **states** (a segment of the loaded
+sample plus a playback style) and recall them live from a MIDI
+keyboard, like flipping between presets.
+
+**Important:** you'll need a MIDI keyboard or controller connected and
+routed into NeditVST in your DAW for this mode to do anything — it's
+entirely MIDI-driven.
+
+- **On-screen keyboard UI** — click a key to give it **focus** for
+  editing. Keys with a saved state show a highlight; the focused key
+  shows a different highlight. Clicking a key doesn't play anything by
+  itself — it's purely for selecting what you're editing.
+- **While a key has focus**, the trim handles, Playback Style selector,
+  and parameter panel all edit *that* state. Everything here works
+  **independent of your DAW's transport** — you can shape a sound with
+  playback stopped, no need to press play first.
+- **Per-state Loop toggle** — on: the state plays continuously once
+  recalled, until a different state is triggered. Off: plays once
+  through the segment, then stops (a one-shot).
+- **Per-state Sync toggle** — on: uses whichever global Pitch Mode
+  (Repitch/Time-Stretch) is active, synced to your DAW's tempo. Off:
+  plays at the segment's native pitch and speed, completely unsynced —
+  useful for material that isn't meant to lock to a grid.
+- **Trim snapping mode** — **Transients** (snaps to detected hits, the
+  default everywhere else) or **Grid** (snaps to a fixed musical grid
+  instead, using the loop's already-established tempo — better for
+  chopping out an exact musical length like "one 16th note" rather than
+  wherever a transient happens to sit). Hold **Shift** to bypass
+  snapping entirely, either mode.
+- **Auto-save** — there's no separate save button. The moment you click
+  a *different* key on the on-screen keyboard to move focus elsewhere,
+  whatever you were just editing is saved automatically.
+- **Playing states from your physical MIDI keyboard:**
+  - Pressing the **currently focused** key's physical note **auditions
+    your in-progress edits** live — hear changes as you make them.
+  - Pressing **any other** key plays whatever's already **saved**
+    there, without changing focus — you can freely check other states
+    while still actively editing a different one.
+- **Quantize Recall** — off by default (recall is instant). Turn it on
+  and pick a note value, and physical key presses wait for the next
+  occurrence of that musical grid point before switching, rather than
+  switching the instant you press — useful for keeping live state
+  changes landing on the beat. Falls back to instant switching if your
+  DAW's transport isn't running, since there's no beat to quantize
+  against without it.
+
+## 9. Known limitations (this build)
 
 - Best results come from well-prepared source material — clean drum
   loops and breaks. Non-rhythmic material (vocals, arbitrary sound
@@ -200,8 +250,11 @@ Switch **Trigger Mode** to **Sequenced** to reveal the step grid.
   in your DAW).
 - Sequencer currently supports up to 32 rows (slices) and is
   single-voice (one thing plays at a time, even across rows).
+- The **Control** sub-mode (sequencing from your DAW's piano roll)
+  isn't built yet — Performance mode above is the only MIDI-driven way
+  to work with NeditVST right now.
 
-## 9. Troubleshooting: plugin doesn't show up (Mac)
+## 10. Troubleshooting: plugin doesn't show up (Mac)
 
 This build isn't code-signed yet, so macOS often blocks it silently
 rather than showing a clear warning — the plugin just won't appear in
@@ -227,7 +280,7 @@ If it *does* show a warning dialog when you first try to load it rather
 than just not appearing, that's Gatekeeper — just confirm you trust it
 and proceed; that's expected for an unsigned build and isn't harmful.
 
-## 10. Building from source
+## 11. Building from source
 
 If you'd rather build it yourself than trust a downloaded binary — or if
 the fixes above didn't work — the repo builds the same way on all three
