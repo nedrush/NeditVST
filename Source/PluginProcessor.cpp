@@ -543,6 +543,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // returns immediately, so it never needs to reach the gates at all).
     const bool performanceMode = (triggerMode.load() == TriggerMode::performance);
 
+    // Control mode (same reasoning as performanceMode just above) --
+    // note-on-driven slice triggering has to work whether or not the host
+    // transport is running, unlike Slice Length/Clock/Sequenced.
+    const bool controlMode = (triggerMode.load() == TriggerMode::control);
+
     // Audition (Step 25): takes priority over everything below — a raw,
     // generative-engine-bypassing loop of [trimStart, trimEnd), independent
     // of host transport (it has to work even while the transport's
@@ -568,16 +573,17 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     if (slices.empty())
         return;
 
-    // Performance mode (Pass 1) is exempt from both gates below, same
-    // "independent of host transport" contract Audition already gets above
-    // -- recalling a state (or hearing the one currently being edited) has
-    // to work whether or not the host's transport is running, unlike Slice
-    // Length/Clock/Sequenced, which are all genuinely meaningless without
-    // it (their triggers ARE the transport's beat/bar position).
-    if (playHead == nullptr && ! performanceMode)
+    // Performance mode (Pass 1) and Control mode are both exempt from both
+    // gates below, same "independent of host transport" contract Audition
+    // already gets above -- recalling a state (or hearing the one currently
+    // being edited), or triggering a slice directly from an incoming note,
+    // has to work whether or not the host's transport is running, unlike
+    // Slice Length/Clock/Sequenced, which are all genuinely meaningless
+    // without it (their triggers ARE the transport's beat/bar position).
+    if (playHead == nullptr && ! performanceMode && ! controlMode)
         return;
 
-    if ((! position.hasValue() || ! hostTransportPlaying) && ! performanceMode)
+    if ((! position.hasValue() || ! hostTransportPlaying) && ! performanceMode && ! controlMode)
     {
         hasCurrentPick = false; // transport stopped — fresh chain next time it starts
         clockModeInitialized = false;
@@ -679,12 +685,14 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         resetWindowInitialized = false; // the other modes' own init state is meaningless here; re-entering any of them later starts fresh
         sequencedModeInitialized = false;
         performanceModeInitialized = false;
+        controlModeInitialized = false;
     }
     else if (sequencedMode)
     {
         clockModeInitialized = false;
         resetWindowInitialized = false;
         performanceModeInitialized = false;
+        controlModeInitialized = false;
 
         // Sequenced Trigger Mode (Step 37) — same "just entered / transport
         // just started" treatment Clock mode gives itself above: force the
@@ -710,6 +718,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         clockModeInitialized = false;
         resetWindowInitialized = false;
         sequencedModeInitialized = false;
+        controlModeInitialized = false;
 
         // Just entered Performance mode, or transport just started --
         // unlike every other mode's own init above, this does NOT force an
@@ -722,11 +731,30 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             hasCurrentPick = false;
         }
     }
+    else if (controlMode)
+    {
+        clockModeInitialized = false;
+        resetWindowInitialized = false;
+        sequencedModeInitialized = false;
+        performanceModeInitialized = false;
+
+        // Just entered Control mode, or transport just started -- same
+        // "starts and stays silent until a note-on" contract Performance
+        // mode's own init gives itself just above.
+        if (! controlModeInitialized)
+        {
+            controlModeInitialized = true;
+            hasCurrentPick = false;
+            controlGateReleaseActive = false;
+            controlCurrentlySoundingNote = -1;
+        }
+    }
     else
     {
         clockModeInitialized = false; // so re-entering Clock mode later starts fresh
         sequencedModeInitialized = false;
         performanceModeInitialized = false; // so re-entering Performance mode later starts fresh (silent) again
+        controlModeInitialized = false; // so re-entering Control mode later starts fresh (silent) again
 
         // Slice Length periodic reset (Step 34) — same "just entered /
         // transport just started, snap to the current window and force an
@@ -1741,6 +1769,117 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                                           : naturalLengthHostSamples;
             }
         }
+        else if (controlMode)
+        {
+            // Control mode: a slice note-on (handleControlNoteOn(), routed
+            // through dispatchNoteOn() before this per-sample loop runs)
+            // triggers whichever slice it resolved to, at whichever
+            // PlaybackStyle the last keyswitch selected, at a gain derived
+            // from that note-on's own velocity. No probability engine, no
+            // window/tick concept -- transport-independent, exactly like
+            // Performance mode just above -- driven purely by
+            // controlNoteOnPending, consumed here the same way
+            // performanceRecallPending is consumed there.
+            bool needsFreshPick = controlNoteOnPending;
+            controlNoteOnPending = false;
+
+            if (! needsFreshPick && hasCurrentPick)
+            {
+                // Same per-style "has this pick run its course" condition
+                // every other mode's own per-sample dispatch re-derives.
+                // Trigger mode (the default) always lets a pick run to its
+                // own natural/effect-driven completion -- identical to
+                // every other mode here; Gate mode's early stop is handled
+                // entirely by the release-gain countdown in the shared gain
+                // stage below, which forces hasCurrentPick false on its own
+                // once the release fade completes, so there's nothing extra
+                // to check for Gate here.
+                const bool pickFinished = (currentPlaybackStyle == PlaybackStyle::tapeStop)
+                    ? (samplesSincePickStart >= currentPickTapeStopDurationHostSamples)
+                    : (currentPosition >= (double) (((currentPlaybackStyle == PlaybackStyle::pingPong
+                                                           || currentPlaybackStyle == PlaybackStyle::stretch
+                                                           || currentPlaybackStyle == PlaybackStyle::scratch)
+                                                          ? currentEndSample
+                                                          : juce::jmin (currentEndSample, sourceLength)) - 1));
+
+                if (pickFinished)
+                {
+                    hasCurrentPick = false; // one-shot -- no loop concept in Control mode; stays silent until the next note-on
+                    controlGateReleaseActive = false; // nothing left to release-fade
+                }
+            }
+
+            if (needsFreshPick && controlPendingSliceIndex >= 0 && controlPendingSliceIndex < (int) slices.size())
+            {
+                controlGateReleaseActive = false; // monophonic retrigger abandons any release fade already in progress
+                controlGateReleaseElapsedSamples = 0.0;
+                controlCurrentlySoundingNote = controlPendingNoteNumber;
+                currentControlVelocityGain = controlPendingVelocityGain;
+
+                currentPlaybackStyle = indexToPlaybackStyle (controlPendingStyle);
+                const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
+                const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
+                const bool scratch = (currentPlaybackStyle == PlaybackStyle::scratch);
+
+                // Control mode always uses the global default parameter
+                // values -- same "no per-note override" convention Clock/
+                // Slice Length modes already follow (Sequenced mode is the
+                // only one with per-cell overrides).
+                currentPickStretchGrainSizeMs = stretchGrainSizeMsValue.load();
+                currentPickStretchSpeedMultiplier = stretchSpeedMultiplierValue.load();
+
+                const auto& slice = slices[(size_t) controlPendingSliceIndex];
+                currentSliceStartSample = slice.startSample;
+                currentSliceLength = slice.endSample - slice.startSample;
+                currentPosition = (double) slice.startSample;
+
+                currentPickScratchCycleLengthHostSamples = scratch
+                    ? computeScratchCycleLengthHostSamples (getScratchRateGlobal(), currentSliceLength,
+                                                             hostBpm, hostSampleRate, playbackRate)
+                    : 0.0;
+
+                currentPickScratchForwardCurve = easingCurveFromIndex (getScratchForwardCurveGlobal());
+                currentPickScratchBackwardCurve = easingCurveFromIndex (getScratchBackwardCurveGlobal());
+
+                currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
+                                 : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
+                                 : scratch ? (int) (slice.startSample + currentPickScratchCycleLengthHostSamples * playbackRate)
+                                           : slice.endSample;
+                hasCurrentPick = true;
+                pickJustStarted = true;
+                currentlyPlayingSliceIndexForUI.store (controlPendingSliceIndex);
+
+                currentPickBeatQuantized = false; // no window/tick concept here to quantize against, same as Performance mode
+                currentPickNativeRateActive = false;
+
+                currentPickFilterSweepResonance = filterSweepResonanceValue.load();
+                currentPickFilterSweepType = filterSweepFilterTypeValue.load();
+                currentPickCurveShape = curveShapeValue.load();
+
+                currentPickBitcrushRateValue = getBitcrushRateReductionGlobal();
+                currentPickBitcrushRateMode = getBitcrushRateReductionModeGlobal();
+                currentPickBitcrushBitDepthValue = getBitcrushBitDepthGlobal();
+                currentPickBitcrushBitDepthMode = getBitcrushBitDepthModeGlobal();
+
+                currentPickFlangerDelayValue = getFlangerDelayTimeGlobal();
+                currentPickFlangerDelayMode = getFlangerDelayTimeModeGlobal();
+                currentPickFlangerMixValue = getFlangerMixGlobal();
+                currentPickFlangerMixMode = getFlangerMixModeGlobal();
+                currentPickFlangerFeedbackValue = getFlangerFeedbackGlobal();
+                currentPickFlangerFeedbackMode = getFlangerFeedbackModeGlobal();
+
+                samplesSincePickStart = 0.0;
+                const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
+                currentPickMidpointHostSamples = scratch
+                    ? (currentPickScratchCycleLengthHostSamples * 0.5)
+                    : naturalLengthHostSamples;
+                currentPickTapeStopDurationHostSamples = naturalLengthHostSamples;
+                currentPickLengthInHostSamples = pingPong ? (2.0 * naturalLengthHostSamples)
+                                                : stretch ? ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples)
+                                                : scratch ? currentPickScratchCycleLengthHostSamples
+                                                          : naturalLengthHostSamples;
+            }
+        }
         else
         {
             // Slice Length mode: pick a fresh slice whenever nothing's
@@ -2215,6 +2354,26 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             ? juce::jlimit (0.0, 1.0, (double) sweptVolumeValue (currentPickVolumeValue, currentPickVolumeMode))
             : 1.0;
 
+        // Control mode: velocity->volume, a per-pick constant captured at
+        // trigger time (see currentControlVelocityGain's own doc comment) --
+        // gated on controlMode itself, not just "is it 1.0 right now," so a
+        // stale non-1.0 value can never bleed into a different mode after
+        // switching away from Control mode mid-pick.
+        const double controlVelocityGain = controlMode ? currentControlVelocityGain : 1.0;
+
+        // Gate release (Control mode only): an ADDITIONAL fadeOutMs-long
+        // ramp to silence, independent of whichever style's own duration/
+        // completion math governs currentPickLengthInHostSamples above --
+        // this is what lets one mechanism gate-stop all 9 PlaybackStyles
+        // identically without special-casing any of them (see
+        // controlGateReleaseActive's own doc comment in PluginProcessor.h).
+        // Only ever active while Control mode's Gate setting has actually
+        // armed it (handleControlNoteOff()), so this is a bare no-op (1.0)
+        // everywhere else, same as volumeGain's own mode gate above.
+        const double controlGateReleaseGain = controlGateReleaseActive
+            ? juce::jlimit (0.0, 1.0, 1.0 - controlGateReleaseElapsedSamples / juce::jmax (1.0, fadeOutSamplesRequested))
+            : 1.0;
+
         // Read position decided once per OUTPUT sample here (not per
         // channel below), same "stereo pair stays in lockstep" reasoning
         // as Bitcrush's shared hold counter above -- both channels read
@@ -2470,6 +2629,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // in range with no further clamp needed. A no-op (1.0) outside
             // Sequenced mode -- see volumeRampActive above.
             gain *= volumeGain;
+
+            // Control mode: velocity->volume and Gate's release fade, same
+            // "additional multiplier, already clamped to [0, 1]" shape as
+            // Volume just above -- both are bare no-ops (1.0) outside
+            // Control mode, see their own doc comments just above.
+            gain *= controlVelocityGain;
+            gain *= controlGateReleaseGain;
 
             // Filter Down/Filter Up (Step 29/30): cutoff computed once per
             // sample here (shared across every output channel below, not
@@ -2845,6 +3011,25 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                                                            : effectivePickPlaybackRate;
             currentPosition += effectivePlaybackRate;
             samplesSincePickStart += 1.0;
+
+            // Control mode Gate release: counts real time since the release
+            // note-off arrived (controlGateReleaseGain above already used
+            // this sample's PRE-increment value, same convention
+            // samplesSincePickStart itself follows). Once the ramp reaches
+            // silence, force the pick to actually stop -- controlMode's own
+            // per-sample dispatch won't run again until the NEXT sample, so
+            // this is the one place that can cut it off right on schedule.
+            if (controlGateReleaseActive)
+            {
+                controlGateReleaseElapsedSamples += 1.0;
+
+                if (controlGateReleaseElapsedSamples >= fadeOutSamplesRequested)
+                {
+                    hasCurrentPick = false;
+                    controlGateReleaseActive = false;
+                    controlCurrentlySoundingNote = -1;
+                }
+            }
         }
 
         // Filter Sweep's Whole Window scope (Step 30) needs true window-
@@ -3165,15 +3350,18 @@ void SlicerAudioProcessor::handleIncomingMidi (const juce::MidiBuffer& midiMessa
         const auto message = metadata.getMessage();
 
         if (message.isNoteOn())
-            dispatchNoteOn (message.getNoteNumber(), hostTransportPlaying);
+            dispatchNoteOn (message.getNoteNumber(), message.getFloatVelocity(), hostTransportPlaying);
+        else if (message.isNoteOff())
+            dispatchNoteOff (message.getNoteNumber());
     }
 }
 
-void SlicerAudioProcessor::dispatchNoteOn (int noteNumber, bool hostTransportPlaying)
+void SlicerAudioProcessor::dispatchNoteOn (int noteNumber, float velocity01, bool hostTransportPlaying)
 {
     // The routing point: checks current context (TriggerMode) and calls
-    // whichever handler applies. Sequenced mode's pattern bank and
-    // Performance mode's state bank (Pass 1) are the two handlers today.
+    // whichever handler applies. Sequenced mode's pattern bank, Performance
+    // mode's state bank (Pass 1), and Control mode's slice/keyswitch
+    // dispatch are the handlers today.
     switch (triggerMode.load())
     {
         case TriggerMode::sequenced:
@@ -3187,11 +3375,21 @@ void SlicerAudioProcessor::dispatchNoteOn (int noteNumber, bool hostTransportPla
             handlePerformanceStateNoteOn (noteNumber, hostTransportPlaying);
             break;
 
+        case TriggerMode::control:
+            handleControlNoteOn (noteNumber, velocity01);
+            break;
+
         case TriggerMode::sliceLength:
         case TriggerMode::clock:
         default:
             break; // MIDI ignored entirely here
     }
+}
+
+void SlicerAudioProcessor::dispatchNoteOff (int noteNumber)
+{
+    if (triggerMode.load() == TriggerMode::control)
+        handleControlNoteOff (noteNumber);
 }
 
 SlicerAudioProcessor::SequencerPatternSnapshot SlicerAudioProcessor::captureCurrentSequencerPatternSnapshot() const
@@ -3491,6 +3689,52 @@ void SlicerAudioProcessor::setPerformanceWorkingSync (bool sync)
 {
     const juce::ScopedLock sl (sampleLock);
     performanceWorkingState.sync = sync;
+}
+
+//==============================================================================
+// Control mode -- piano-roll slice triggering with keyswitch style selection
+//==============================================================================
+
+void SlicerAudioProcessor::handleControlNoteOn (int noteNumber, float velocity01)
+{
+    const int base = controlBaseNote.load();
+
+    // Fixed keyswitch mapping (getControlKeyswitchNote()'s own inverse):
+    // noteNumber is style playbackStyleIndex's keyswitch exactly when
+    // noteNumber == base - 1 - playbackStyleIndex, i.e.
+    // playbackStyleIndex == base - 1 - noteNumber. Checked first -- cheap
+    // arithmetic, and the two ranges never overlap by construction anyway
+    // (keyswitches always sit below base, slices always at or above it).
+    const int keyswitchStyle = base - 1 - noteNumber;
+
+    if (keyswitchStyle >= 0 && keyswitchStyle < numPlaybackStyleOptions)
+    {
+        controlActiveStyle.store (keyswitchStyle);
+        return; // keyswitches never make sound
+    }
+    const int sliceIndex = noteNumber - base;
+    const int numAvailableSlices = getSequencerNumRows(); // same 32-slice cap as the Sequencer's own rows
+
+    if (sliceIndex < 0 || sliceIndex >= numAvailableSlices)
+        return; // outside both the keyswitch and slice ranges -- no-op
+
+    controlNoteOnPending = true;
+    controlPendingSliceIndex = sliceIndex;
+    controlPendingStyle = controlActiveStyle.load();
+    controlPendingVelocityGain = (double) juce::jlimit (0.0f, 1.0f, velocity01);
+    controlPendingNoteNumber = noteNumber;
+}
+
+void SlicerAudioProcessor::handleControlNoteOff (int noteNumber)
+{
+    if (! controlGateModeActive.load())
+        return; // Trigger mode ignores note-off entirely
+
+    if (noteNumber != controlCurrentlySoundingNote || ! hasCurrentPick)
+        return; // not the note that's actually still sounding -- nothing to release
+
+    controlGateReleaseActive = true;
+    controlGateReleaseElapsedSamples = 0.0;
 }
 
 int SlicerAudioProcessor::getSequencerCellStyle (int row, int column) const

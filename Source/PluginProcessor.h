@@ -526,7 +526,20 @@ public:
     //     states plays back on MIDI recall (see the Performance State Bank
     //     section below). See its own class doc comment on
     //     PerformanceStateSnapshot for the full design.
-    enum class TriggerMode { sliceLength, clock, sequenced, performance };
+    //   control — piano-roll slice triggering: ascending chromatically from
+    //     a configurable base note (default C1, Simpler's own convention),
+    //     one note per detected slice, capped at 32 like the Sequencer's own
+    //     row cap; a fixed block of keyswitch notes immediately below the
+    //     base note (one per PlaybackStyle, keyswitchNote = baseNote - 1 -
+    //     styleIndex — see getControlKeyswitchNote() below) sets which style
+    //     plays for every slice note-on from that point forward. No
+    //     assignable storage at all -- the mapping is pure arithmetic, so
+    //     moving the base note shifts the whole keyswitch block with it for
+    //     free. No probability engine, no window/tick concept — same
+    //     "nothing here is randomized," transport-independent precedent as
+    //     Performance mode, just driven by whichever slice note-on arrives
+    //     rather than a saved snapshot.
+    enum class TriggerMode { sliceLength, clock, sequenced, performance, control };
 
     void setTriggerMode (TriggerMode mode)
     {
@@ -536,6 +549,18 @@ public:
         resetWindowInitialized = false; // Step 34 -- same "start fresh, aligned" guarantee entering Slice Length mode
         sequencedModeInitialized = false; // Step 37 -- same guarantee entering Sequenced mode
         performanceModeInitialized = false; // Pass 1 -- same guarantee entering Performance mode
+        controlModeInitialized = false; // same guarantee entering Control mode
+
+        // Leaving Control mode abandons a note-on pick still waiting to be
+        // consumed by the per-sample loop, and any Gate release fade
+        // already in progress -- same "leaving the mode abandons transient
+        // state" reasoning as MIDI Learn just below, applied to Control
+        // mode's own audio-thread-only pending state.
+        if (mode != TriggerMode::control)
+        {
+            controlNoteOnPending = false;
+            controlGateReleaseActive = false;
+        }
 
         // Pattern bank MIDI Learn only makes sense while Sequenced mode is
         // selected (it's the only mode whose UI can arm it) -- leaving the
@@ -1623,6 +1648,52 @@ public:
     bool getPerformanceWorkingSync() const;
     void setPerformanceWorkingSync (bool sync);
 
+    //=== Control mode (piano-roll slice triggering with keyswitch style selection) ===
+    // Reuses the shared MIDI dispatch layer (dispatchNoteOn()'s own switch,
+    // above) directly -- see handleControlNoteOn()/handleControlNoteOff() in
+    // the private section for the actual dispatch.
+    //
+    // Base note (default MIDI 36 == C1, Ableton/Simpler's own octave
+    // numbering, where middle C is C3) marks where the ascending-chromatic
+    // slice range starts; slice range is capped at numSequencerRows (32),
+    // same cap as the Sequencer's own rows, for consistency across the
+    // plugin. Keyswitch notes are a fixed, hardcoded block immediately below
+    // the base note -- see getControlKeyswitchNote() below -- no assignable
+    // storage at all, so moving the base note shifts the whole keyswitch
+    // block with it automatically.
+    void setControlBaseNote (int noteNumber) { controlBaseNote.store (juce::jlimit (0, 127, noteNumber)); }
+    int getControlBaseNote() const { return controlBaseNote.load(); }
+
+    // Trigger (default, matching every other mode's own trigger behaviour
+    // and Simpler's own default) ignores note-off entirely, playing each
+    // pick to its natural/effect-driven completion. Gate stops playback the
+    // instant the triggering note is released, via the same fadeOutMs
+    // click-avoidance ramp used everywhere else in the engine (see
+    // controlGateReleaseActive/controlGateReleaseElapsedSamples below) --
+    // a genuinely new kind of interruption, since nothing else here stops
+    // playback from an external signal mid-pick.
+    void setControlGateMode (bool gateEnabled) { controlGateModeActive.store (gateEnabled); }
+    bool getControlGateMode() const { return controlGateModeActive.load(); }
+
+    // Fixed keyswitch mapping: playbackStyleIndex's dedicated note is always
+    // baseNote - 1 - playbackStyleIndex, i.e. the numPlaybackStyleOptions
+    // notes immediately below the base note, in the same order as the
+    // playback-style palette/probability table (Forward closest to the base
+    // note, Flanger furthest below it). Pure arithmetic -- no per-session
+    // state, nothing to assign, nothing that can drift out of sync with the
+    // base note. May fall outside [0, 127] for a low enough base note (a
+    // genuinely unreachable keyswitch, same as any MIDI mapping that runs
+    // off the end of the note range) -- callers displaying this should treat
+    // an out-of-range result as "unreachable," not clamp it into range.
+    int getControlKeyswitchNote (int playbackStyleIndex) const
+    {
+        return controlBaseNote.load() - 1 - playbackStyleIndex;
+    }
+
+    // Which PlaybackStyle index the last keyswitch note-on selected --
+    // Forward (0) until any keyswitch has ever fired this session.
+    int getControlActiveStyle() const { return controlActiveStyle.load(); }
+
 #if JUCE_DEBUG
     // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
     // done. Call from a UI-thread timer (SequencerGrid's own 30fps poll)
@@ -1833,7 +1904,12 @@ private:
     // Recall's note-on handler can decide immediate-vs-deferred on the spot
     // -- every other handler ignores it.
     void handleIncomingMidi (const juce::MidiBuffer& midiMessages, bool hostTransportPlaying);
-    void dispatchNoteOn (int noteNumber, bool hostTransportPlaying);
+    void dispatchNoteOn (int noteNumber, float velocity01, bool hostTransportPlaying);
+
+    // Note-off dispatch -- only ever meaningful to Control mode's Gate
+    // setting (see handleControlNoteOff() below); every other mode still
+    // ignores note-off entirely, unchanged from before this existed.
+    void dispatchNoteOff (int noteNumber);
 
     // Sequenced mode's recall entry point (Pass 2) -- routes by
     // patternSwitchTiming: immediate applies handleSequencerPatternRecallNoteOn()
@@ -1899,6 +1975,31 @@ private:
     // it -- moved out of handlePerformanceStateNoteOn() itself so both call
     // sites (immediate and deferred) share exactly one implementation.
     void applyPerformanceStateRecall (int noteNumber);
+
+    // Control mode's own note-on entry point -- dispatched from
+    // dispatchNoteOn()'s TriggerMode::control case. Keyswitch notes (the
+    // fixed getControlKeyswitchNote() block, checked via the inverse
+    // arithmetic below) are checked first -- a match just updates
+    // controlActiveStyle and produces no sound. Otherwise noteNumber is
+    // resolved against the ascending-chromatic slice range starting at
+    // controlBaseNote (capped at numSequencerRows, same as the Sequencer);
+    // outside both ranges is a silent no-op. The two ranges are structurally
+    // disjoint by construction (keyswitches always sit below controlBaseNote,
+    // slices always at or above it), so there's no overlap to resolve --
+    // checking keyswitches first is purely a cheap-arithmetic-first
+    // ordering, not overlap resolution. A resolved slice note arms
+    // controlNoteOnPending, consumed on the very next per-sample check in
+    // processBlock()'s controlMode branch -- same same-call, same-lock
+    // handoff shape performanceRecallPending already uses.
+    void handleControlNoteOn (int noteNumber, float velocity01);
+
+    // Control mode's Gate release -- a no-op unless Gate mode is on and
+    // noteNumber matches whichever note is actually sounding right now
+    // (controlCurrentlySoundingNote); arms controlGateReleaseActive, which
+    // the shared per-sample gain stage in processBlock() fades to silence
+    // over fadeOutMs (the same click-avoidance envelope used everywhere
+    // else) before forcing hasCurrentPick false.
+    void handleControlNoteOff (int noteNumber);
 
     // Unifies the tempo math (Step 23) that both Trim markers and Manual
     // BPM override feed into:
@@ -2159,6 +2260,13 @@ private:
     PerformanceStateSnapshot performanceWorkingState;
     std::atomic<int> focusedPerformanceStateSlot { -1 }; // -1 = nothing focused yet
 
+    // Control mode -- base note/Gate setting are plain global atomics. No
+    // keyswitch storage at all: getControlKeyswitchNote() computes each
+    // style's note directly from controlBaseNote.
+    std::atomic<int> controlBaseNote { 36 }; // C1, Ableton/Simpler numbering (MIDI 60 == C3)
+    std::atomic<bool> controlGateModeActive { false }; // false = Trigger (default), true = Gate
+    std::atomic<int> controlActiveStyle { 0 }; // PlaybackStyle index selected by the last keyswitch pressed
+
     // Pattern Switch Timing (Pass 2) -- see the public enum's own doc
     // comment above. patternSwitchIntervalIndex defaults to index 19 ("1n",
     // one bar) -- a coarser default than clockReferenceIndex's one-beat
@@ -2412,6 +2520,35 @@ private:
     // as every other currentPick*/performance* field in this section.
     bool performancePlaybackIsFocused = false;
     PerformanceStateSnapshot currentlyPlayingPerformanceSnapshot;
+
+    // Control mode (audio thread only) -- controlModeInitialized/
+    // controlNoteOnPending mirror performanceModeInitialized/
+    // performanceRecallPending exactly: starts and stays silent until a
+    // slice note-on arrives, consumed on the very next per-sample check.
+    // The controlPending* fields are the same-call handoff from
+    // handleControlNoteOn() to that check (slice index, style, velocity gain,
+    // and the actual note number, needed so a later Gate release can confirm
+    // it's releasing the note that's actually still sounding, not a stale
+    // one already superseded by monophonic retrigger).
+    bool controlModeInitialized = false;
+    bool controlNoteOnPending = false;
+    int controlPendingSliceIndex = -1;
+    int controlPendingStyle = 0;
+    double controlPendingVelocityGain = 1.0;
+    int controlPendingNoteNumber = -1;
+    int controlCurrentlySoundingNote = -1;
+    double currentControlVelocityGain = 1.0; // captured from controlPendingVelocityGain at pick-start, held for that pick's whole duration
+
+    // Gate release (audio thread only) -- controlGateReleaseActive arms a
+    // fadeOutMs-long gain ramp (computed in the shared per-sample gain
+    // stage, alongside Volume's own ramp) independent of whichever style's
+    // own duration/completion math is in play, so it works identically
+    // across all 9 PlaybackStyles without special-casing any of them.
+    // controlGateReleaseElapsedSamples counts real time since the release
+    // note-off arrived; once it reaches fadeOutSamplesRequested the ramp
+    // has reached silence and processBlock() forces hasCurrentPick false.
+    bool controlGateReleaseActive = false;
+    double controlGateReleaseElapsedSamples = 0.0;
 
     // Set Interval pattern-switch scheduling (Pass 2, audio thread only) --
     // patternSwitchIntervalBoundaryArmed false means "next occurrence not

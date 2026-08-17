@@ -154,6 +154,8 @@ private:
     void updateQuantizeTransientsVisibility(); // shows/hides the Grid dropdown
     void updatePerformanceTrimSnapVisibility(); // shows/hides the Trim Snap Grid-resolution dropdown
     void updatePerformanceQuantizeRecallVisibility(); // shows/hides the Quantize Recall note-value dropdown
+    void updateControlBaseNoteDisplay(); // refreshes the base-note name label and the slice-range readout
+    void updateControlKeyswitchRows(); // refreshes each keyswitch row's assigned-note label + Assign/Click-a-key button text
     int layoutControlsContent (int contentWidth); // Layers 1-4 only (Pass 3) -- always fully visible, never scrolls; returns the total height it needs
 
     // Recomputes and re-applies the whole window's size (Pass 5). Pitch
@@ -187,7 +189,7 @@ private:
     int layoutGenerateTab (int contentWidth, int startY); // Generate's own local Slice-Length-vs-Clock timing choice
     int layoutSequenceTab (int contentWidth, int startY); // existing Sequenced-mode flow, extracted verbatim
     int layoutPerformTab (int contentWidth, int startY); // existing Performance-mode flow, extracted verbatim
-    int layoutControlPlaceholder (int contentWidth, int startY);
+    int layoutControlTab (int contentWidth, int startY); // base note, slice range readout, Trigger/Gate toggle, keyswitch assignment rows + shared on-screen keyboard
     int layoutTexturesPlaceholder (int contentWidth, int startY);
 
     // Layer 1 (Pass 4) -- Sample only (Load button, status label), truly
@@ -333,16 +335,14 @@ private:
     // their own top-level sub-mode tabs.
     SectionPanel timingSectionPanel { "Timing" };
 
-    // Trivial stub placeholders (Pass 1) -- Beats>Control has no existing
-    // content to migrate yet; Textures' engine doesn't exist at all yet.
-    // Both get real custom-painted content in a later pass.
+    // Trivial stub placeholder -- Textures' engine doesn't exist at all yet.
+    // Beats>Control now has real content (see controlComponents below).
     struct ComingSoonPanel : public juce::Component
     {
         explicit ComingSoonPanel (juce::String text) : message (std::move (text)) {}
         void paint (juce::Graphics& g) override;
         juce::String message;
     };
-    ComingSoonPanel controlPlaceholder { "Control - coming soon" };
     ComingSoonPanel texturesPlaceholder { "Textures - coming soon" };
 
     // Every component that belongs to Layer 1/Layer 3/Generate/Sequence/
@@ -366,6 +366,7 @@ private:
     std::vector<juce::Component*> generateComponents;
     std::vector<juce::Component*> sequenceComponents;
     std::vector<juce::Component*> performComponents;
+    std::vector<juce::Component*> controlComponents;
 
     juce::TextButton loadButton { "Load Sample..." };
     juce::TextButton resetEditsButton { "Reset edits" };
@@ -607,6 +608,7 @@ private:
         SlicerAudioProcessor& processor;
     };
 
+
     // MIDI pattern bank (Sequenced mode only) -- populated/active slot
     // indicators plus the "Save to..." MIDI Learn control. See its own
     // class doc comment for the note-layout/interaction details.
@@ -670,6 +672,28 @@ private:
 
     PerformanceKeyboardSource performanceKeyboardSource;
     PerformanceKeyboardPanel performanceKeyboardPanel;
+
+    // Control mode -- piano-roll slice triggering with keyswitch style
+    // selection (see SlicerAudioProcessor::TriggerMode::control's own doc
+    // comment for the overall design). Base note is a plain IncDecButtons
+    // number box (Pass 4's "back from RotaryKnob" convention, same as Loop
+    // Length/Sensitivity), with a live note-name readout since raw MIDI
+    // note numbers aren't self-explanatory; the slice-range label is purely
+    // informational (derived from base note + slice count, never edited
+    // directly). Keyswitch notes are a fixed, hardcoded block below the base
+    // note (processor.getControlKeyswitchNote()) -- controlKeyswitchLabels
+    // is purely a read-only display, one row per style, refreshed whenever
+    // the base note changes; nothing here is clickable or editable.
+    juce::Label controlBaseNoteLabel;
+    juce::Slider controlBaseNoteSlider;
+    juce::Label controlBaseNoteNameLabel;
+    juce::Label controlSliceRangeLabel;
+
+    juce::Label controlGateModeLabel;
+    SegmentedButtonRow controlGateModeSegments; // "Trigger" / "Gate"
+
+    juce::Label controlKeyswitchSectionLabel;
+    std::array<juce::Label, SlicerAudioProcessor::numPlaybackStyleOptions> controlKeyswitchLabels; // e.g. "Forward: B0"
 
     juce::Viewport sequencerViewport;
     SequencerGrid sequencerGrid;

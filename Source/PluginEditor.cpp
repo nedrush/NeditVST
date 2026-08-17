@@ -68,6 +68,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     {
         const auto mode = processor.getTriggerMode();
         const int subModeIndex = mode == SlicerAudioProcessor::TriggerMode::sequenced ? 1
+                                : mode == SlicerAudioProcessor::TriggerMode::control ? 2
                                 : mode == SlicerAudioProcessor::TriggerMode::performance ? 3
                                                                                           : 0; // Generate
         subModeTabs.setSelectedIndex (subModeIndex, juce::dontSendNotification);
@@ -86,7 +87,6 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     controlsContent.addAndMakeVisible (pitchModeSectionPanel);
     controlsContent.addAndMakeVisible (playbackStyleSectionPanel);
     subModeContent.addAndMakeVisible (timingSectionPanel);
-    subModeContent.addAndMakeVisible (controlPlaceholder);
     subModeContent.addAndMakeVisible (texturesPlaceholder);
 
     controlsContent.addAndMakeVisible (loadButton);
@@ -636,6 +636,57 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     subModeContent.addAndMakeVisible (performanceKeyboardPanel);
 
+    //=== Control mode ===
+    subModeContent.addAndMakeVisible (controlBaseNoteLabel);
+    controlBaseNoteLabel.setText ("Base note", juce::dontSendNotification);
+    controlBaseNoteLabel.setJustificationType (juce::Justification::centredLeft);
+
+    subModeContent.addAndMakeVisible (controlBaseNoteSlider);
+    controlBaseNoteSlider.setSliderStyle (juce::Slider::IncDecButtons);
+    controlBaseNoteSlider.setRange (0.0, 127.0, 1.0);
+    controlBaseNoteSlider.setScrollWheelEnabled (false);
+    controlBaseNoteSlider.setValue (processor.getControlBaseNote(), juce::dontSendNotification);
+    controlBaseNoteSlider.onValueChange = [this]
+    {
+        processor.setControlBaseNote ((int) controlBaseNoteSlider.getValue());
+        updateControlBaseNoteDisplay();
+        updateControlKeyswitchRows(); // keyswitch notes are computed straight from the base note -- moving it shifts the whole block
+    };
+
+    subModeContent.addAndMakeVisible (controlBaseNoteNameLabel);
+    controlBaseNoteNameLabel.setJustificationType (juce::Justification::centredLeft);
+
+    subModeContent.addAndMakeVisible (controlSliceRangeLabel);
+    controlSliceRangeLabel.setJustificationType (juce::Justification::centredLeft);
+    controlSliceRangeLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
+    controlSliceRangeLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
+
+    subModeContent.addAndMakeVisible (controlGateModeLabel);
+    controlGateModeLabel.setText ("Trigger/Gate", juce::dontSendNotification);
+    controlGateModeLabel.setJustificationType (juce::Justification::centredLeft);
+
+    subModeContent.addAndMakeVisible (controlGateModeSegments);
+    controlGateModeSegments.setOptions ({ { "Trigger", std::nullopt }, { "Gate", std::nullopt } });
+    controlGateModeSegments.setSelectedIndex (processor.getControlGateMode() ? 1 : 0, juce::dontSendNotification);
+    controlGateModeSegments.onSelectionChanged = [this] (int selectedIndex)
+    {
+        processor.setControlGateMode (selectedIndex == 1);
+    };
+
+    subModeContent.addAndMakeVisible (controlKeyswitchSectionLabel);
+    controlKeyswitchSectionLabel.setText ("Keyswitches (fixed, below the base note)", juce::dontSendNotification);
+    controlKeyswitchSectionLabel.setJustificationType (juce::Justification::centredLeft);
+
+    for (auto& label : controlKeyswitchLabels)
+    {
+        subModeContent.addAndMakeVisible (label);
+        label.setJustificationType (juce::Justification::centredLeft);
+        label.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
+    }
+
+    updateControlBaseNoteDisplay();
+    updateControlKeyswitchRows();
+
     subModeContent.addAndMakeVisible (sequencerViewport);
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
     sequencerViewport.setScrollBarsShown (true, true);
@@ -682,6 +733,13 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         &performanceQuantizeRecallToggle, &performanceQuantizeRecallIntervalLabel, &performanceQuantizeRecallIntervalSelector,
         &performanceKeyboardPanel
     };
+
+    controlComponents = {
+        &controlBaseNoteLabel, &controlBaseNoteSlider, &controlBaseNoteNameLabel, &controlSliceRangeLabel,
+        &controlGateModeLabel, &controlGateModeSegments, &controlKeyswitchSectionLabel
+    };
+
+    for (auto& label : controlKeyswitchLabels) controlComponents.push_back (&label);
 
     syncTriggerModeToActiveTab(); // no-op: both tab rows were already seeded from processor.getTriggerMode() above
     updateActiveTabVisibility(); // also drives updateSliceLengthClockVisibility()/updatePitchModeVisibility()/updateManualBpmOverrideVisibility()/updateQuantizeTransientsVisibility() for whichever tab is active
@@ -859,7 +917,7 @@ int SlicerAudioProcessorEditor::layoutSubModeContent (int contentWidth)
     switch (subModeTabs.getSelectedIndex())
     {
         case 1: return layoutSequenceTab (contentWidth, 0);
-        case 2: return layoutControlPlaceholder (contentWidth, 0);
+        case 2: return layoutControlTab (contentWidth, 0);
         case 3: return layoutPerformTab (contentWidth, 0);
         default: return layoutGenerateTab (contentWidth, 0);
     }
@@ -1336,11 +1394,36 @@ int SlicerAudioProcessorEditor::layoutPerformTab (int contentWidth, int startY)
     return sacrificialHeight - area.getHeight(); // total consumed height, independent of startY (only position, not the height field, is offset by it)
 }
 
-int SlicerAudioProcessorEditor::layoutControlPlaceholder (int contentWidth, int startY)
+int SlicerAudioProcessorEditor::layoutControlTab (int contentWidth, int startY)
 {
-    constexpr int height = 200;
-    controlPlaceholder.setBounds (0, startY, contentWidth, height);
-    return height;
+    constexpr int sacrificialHeight = 4000;
+    juce::Rectangle<int> area (0, startY, contentWidth, sacrificialHeight);
+
+    auto baseNoteRow = area.removeFromTop (30);
+    controlBaseNoteLabel.setBounds (baseNoteRow.removeFromLeft (90));
+    controlBaseNoteSlider.setBounds (baseNoteRow.removeFromLeft (140));
+    baseNoteRow.removeFromLeft (10);
+    controlBaseNoteNameLabel.setBounds (baseNoteRow.removeFromLeft (60));
+    area.removeFromTop (6);
+
+    controlSliceRangeLabel.setBounds (area.removeFromTop (18));
+    area.removeFromTop (14);
+
+    auto gateRow = area.removeFromTop (30);
+    controlGateModeLabel.setBounds (gateRow.removeFromLeft (90));
+    controlGateModeSegments.setBounds (gateRow.removeFromLeft (160));
+    area.removeFromTop (18);
+
+    controlKeyswitchSectionLabel.setBounds (area.removeFromTop (20));
+    area.removeFromTop (4);
+
+    for (auto& label : controlKeyswitchLabels)
+    {
+        label.setBounds (area.removeFromTop (22));
+        area.removeFromTop (4);
+    }
+
+    return sacrificialHeight - area.getHeight();
 }
 
 int SlicerAudioProcessorEditor::layoutTexturesPlaceholder (int contentWidth, int startY)
@@ -1538,6 +1621,42 @@ void SlicerAudioProcessorEditor::updatePerformanceQuantizeRecallVisibility()
     performanceQuantizeRecallIntervalSelector.setVisible (performance && quantized);
 }
 
+void SlicerAudioProcessorEditor::updateControlBaseNoteDisplay()
+{
+    const int baseNote = processor.getControlBaseNote();
+    controlBaseNoteNameLabel.setText (juce::MidiMessage::getMidiNoteName (baseNote, true, true, 3),
+                                       juce::dontSendNotification);
+
+    const int numSlices = processor.getSequencerNumRows();
+
+    if (numSlices <= 0)
+    {
+        controlSliceRangeLabel.setText ("No slices detected yet", juce::dontSendNotification);
+        return;
+    }
+
+    const int topNote = juce::jmin (127, baseNote + numSlices - 1);
+    controlSliceRangeLabel.setText (
+        "Slices: " + juce::MidiMessage::getMidiNoteName (baseNote, true, true, 3) + " - "
+            + juce::MidiMessage::getMidiNoteName (topNote, true, true, 3)
+            + " (" + juce::String (numSlices) + ")",
+        juce::dontSendNotification);
+}
+
+void SlicerAudioProcessorEditor::updateControlKeyswitchRows()
+{
+    for (int i = 0; i < SlicerAudioProcessor::numPlaybackStyleOptions; ++i)
+    {
+        const int note = processor.getControlKeyswitchNote (i);
+        const juce::String noteName = (note >= 0 && note < 128)
+            ? juce::MidiMessage::getMidiNoteName (note, true, true, 3)
+            : juce::String ("unreachable"); // base note set low enough that this style's fixed slot falls outside 0-127
+
+        controlKeyswitchLabels[(size_t) i].setText (
+            SlicerAudioProcessor::getPlaybackStyleName (i) + ": " + noteName, juce::dontSendNotification);
+    }
+}
+
 void SlicerAudioProcessorEditor::updatePitchModeVisibility()
 {
     const int selectedIndex = pitchModeSegments.getSelectedIndex();
@@ -1576,7 +1695,6 @@ void SlicerAudioProcessorEditor::updateActiveTabVisibility()
 
     subModeTabs.setVisible (beats);
     texturesPlaceholder.setVisible (! beats);
-    controlPlaceholder.setVisible (controlActive);
 
     // Layer 1 (Pass 4) -- truly universal, shown regardless of Beats/Textures
     // (unconditionally true, unlike every other group below). Just Sample now.
@@ -1634,6 +1752,15 @@ void SlicerAudioProcessorEditor::updateActiveTabVisibility()
         updatePerformanceTrimSnapVisibility();
         updatePerformanceQuantizeRecallVisibility();
     }
+
+    for (auto* c : controlComponents)
+        c->setVisible (controlActive);
+
+    if (controlActive)
+    {
+        updateControlBaseNoteDisplay();
+        updateControlKeyswitchRows();
+    }
 }
 
 void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
@@ -1643,9 +1770,10 @@ void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
     if (topLevelModeTabs.getSelectedIndex() != 0) // Textures: no trigger-mode implication
         return;
 
-    const TM desired = subModeTabs.getSelectedIndex() == 1 ? TM::sequenced   // Sequence tab
+    const TM desired = subModeTabs.getSelectedIndex() == 1 ? TM::sequenced    // Sequence tab
+                      : subModeTabs.getSelectedIndex() == 2 ? TM::control     // Control tab
                       : subModeTabs.getSelectedIndex() == 3 ? TM::performance // Perform tab
-                                                             : lastGenerateTriggerMode; // Generate/Control
+                                                             : lastGenerateTriggerMode; // Generate
 
     if (processor.getTriggerMode() == desired)
         return; // guard: setTriggerMode() unconditionally resets clock/reset/sequenced/performance init flags even for a no-op mode
@@ -1687,5 +1815,6 @@ void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()
     calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
                                  juce::dontSendNotification);
 
+    updateControlBaseNoteDisplay(); // Control mode's slice-range readout depends on the current slice count
     waveformDisplay.refresh();
 }
