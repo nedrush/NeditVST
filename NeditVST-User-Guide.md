@@ -240,7 +240,36 @@ entirely MIDI-driven.
   DAW's transport isn't running, since there's no beat to quantize
   against without it.
 
-## 9. Known limitations (this build)
+## 9. Control Mode
+
+Switch **Trigger Mode** to **Control** to trigger and sequence slices
+directly from your DAW's piano roll/MIDI editor — draw MIDI notes,
+NeditVST plays the matching slices. Modeled on the same convention
+Ableton's Simpler uses for its own Slice mode.
+
+- **Base note** (default **C1**, adjustable) — this is where your first
+  slice sits. Slices ascend chromatically from there (capped at 32,
+  same as the Sequencer's row limit) — base note + 1 semitone = slice
+  2, and so on.
+- **Playback style keyswitches** — a fixed block of 9 notes sitting
+  directly *below* the base note (with the default C1, that's D#0
+  through B0), one per playback style. These notes make **no sound on
+  their own** — pressing one just sets "everything triggered from now
+  on uses this style," until you press a different keyswitch. This is
+  the same idea as keyswitching in sample libraries like Kontakt. The
+  mapping is fixed, not user-assignable, and shown as a read-only
+  reference in the UI.
+- **Velocity → Volume** — how hard you hit a slice note controls its
+  volume.
+- **Trigger / Gate toggle** — **Trigger** (default): a slice plays out
+  its full length regardless of when you release the note, matching
+  how every other mode in NeditVST behaves. **Gate**: releasing the
+  note cuts the slice off immediately (with a clean fade, no click).
+- **Monophonic** — playing a new slice note cuts off whatever's
+  currently sounding, same as every other NeditVST mode. Chords/overlap
+  aren't supported.
+
+## 10. Known limitations (this build)
 
 - Best results come from well-prepared source material — clean drum
   loops and breaks. Non-rhythmic material (vocals, arbitrary sound
@@ -250,11 +279,8 @@ entirely MIDI-driven.
   in your DAW).
 - Sequencer currently supports up to 32 rows (slices) and is
   single-voice (one thing plays at a time, even across rows).
-- The **Control** sub-mode (sequencing from your DAW's piano roll)
-  isn't built yet — Performance mode above is the only MIDI-driven way
-  to work with NeditVST right now.
 
-## 10. Troubleshooting: plugin doesn't show up (Mac)
+## 11. Troubleshooting: plugin doesn't show up (Mac)
 
 This build isn't code-signed yet, so macOS often blocks it silently
 rather than showing a clear warning — the plugin just won't appear in
@@ -280,7 +306,7 @@ If it *does* show a warning dialog when you first try to load it rather
 than just not appearing, that's Gatekeeper — just confirm you trust it
 and proceed; that's expected for an unsigned build and isn't harmful.
 
-## 11. Building from source
+## 12. Building from source
 
 If you'd rather build it yourself than trust a downloaded binary — or if
 the fixes above didn't work — the repo builds the same way on all three
