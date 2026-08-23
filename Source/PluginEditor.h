@@ -147,6 +147,7 @@ public:
 
 private:
     void buttonClicked (juce::Button* button) override;
+    void mouseDown (const juce::MouseEvent& event) override; // routes clicks on controlKeyswitchLabels (registered as mouse listeners) to the style-tab selection below them
     void timerCallback() override; // keeps Undo/Redo enabled-state in sync
     void chooseAndLoadFile();
     void updateAfterSampleOrSliceChange(); // refreshes status text, BPM display, and the waveform
@@ -157,7 +158,8 @@ private:
     void updatePerformanceTrimSnapVisibility(); // shows/hides the Trim Snap Grid-resolution dropdown
     void updatePerformanceQuantizeRecallVisibility(); // shows/hides the Quantize Recall note-value dropdown
     void updateControlBaseNoteDisplay(); // refreshes the base-note name label and the slice-range readout
-    void updateControlKeyswitchRows(); // refreshes each keyswitch row's assigned-note label + Assign/Click-a-key button text
+    void updateControlKeyswitchRows(); // refreshes each keyswitch row's assigned-note label + Assign/Click-a-key button text, and its selection highlight
+    void updateControlStyleParameterPanelVisibility(); // shows/hides controlStyleParametersLabel/controlStyleParameterPanel based on controlSelectedKeyswitchStyle
     int layoutControlsContent (int contentWidth); // Layers 1-4 only (Pass 3) -- always fully visible, never scrolls; returns the total height it needs
 
     // Recomputes and re-applies the whole window's size (Pass 5). Pitch
@@ -678,8 +680,18 @@ private:
     // informational (derived from base note + slice count, never edited
     // directly). Keyswitch notes are a fixed, hardcoded block below the base
     // note (processor.getControlKeyswitchNote()) -- controlKeyswitchLabels
-    // is purely a read-only display, one row per style, refreshed whenever
-    // the base note changes; nothing here is clickable or editable.
+    // is refreshed whenever the base note changes, one row per style.
+    //
+    // Each row also acts as a style tab (mirrors Generate's
+    // playbackStyleSegments driving playbackStyleParameterPanel): clicking
+    // one (via the mouse-listener registered on each label in the
+    // constructor, routed through this editor's own mouseDown() override)
+    // selects it as controlSelectedKeyswitchStyle and reveals
+    // controlStyleParameterPanel below the list, showing that style's
+    // parameters. controlStyleParameterPanel is constructed the same way
+    // Generate's own playbackStyleParameterPanel is (no getValue/setValue
+    // lambdas), so it reads/writes the exact same global default storage --
+    // there is no separate Control-mode copy of these values.
     juce::Label controlBaseNoteLabel;
     juce::Slider controlBaseNoteSlider;
     juce::Label controlBaseNoteNameLabel;
@@ -689,7 +701,16 @@ private:
     SegmentedButtonRow controlGateModeSegments; // "Trigger" / "Gate"
 
     juce::Label controlKeyswitchSectionLabel;
-    std::array<juce::Label, SlicerAudioProcessor::numPlaybackStyleOptions> controlKeyswitchLabels; // e.g. "Forward: B0"
+    std::array<juce::Label, SlicerAudioProcessor::numPlaybackStyleOptions> controlKeyswitchLabels; // e.g. "Forward: B0", click-to-select
+
+    // -1 until the user clicks a keyswitch row for the first time -- the
+    // panel below stays hidden until then (see
+    // updateControlStyleParameterPanelVisibility()), same "nothing shown
+    // until you pick something" feel as a freshly opened tab strip with no
+    // default selection.
+    int controlSelectedKeyswitchStyle = -1;
+    juce::Label controlStyleParametersLabel;
+    PlaybackStyleParameterPanel controlStyleParameterPanel;
 
     juce::Viewport sequencerViewport;
     SequencerGrid sequencerGrid;

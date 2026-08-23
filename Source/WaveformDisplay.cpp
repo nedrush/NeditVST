@@ -277,14 +277,18 @@ void WaveformDisplay::paint (juce::Graphics& g)
         if (hasPreview)
             continue; // don't draw a fader for a proposed-but-uncommitted layout
 
-        // Sequenced Trigger Mode (Step 37) never rolls the probability
-        // engine at all -- every hit is explicitly placed by the user on
-        // the sequencer grid instead -- so the fader would just be a
-        // stale, misleading leftover from whatever it last was in another
-        // mode. Same visibility-gating pattern as hiding Clock-only
-        // controls in Slice Length mode, just applied to painting here
-        // instead of a juce::Component's setVisible().
-        if (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::sequenced)
+        // Weighted slice-picking (pickWeightedRandomSlice()) only ever runs
+        // from the Slice Length/Clock dispatch paths -- Sequenced mode
+        // places every hit explicitly on the grid, Control mode dispatches
+        // by keyswitch, and Performance mode is excluded above already --
+        // so the fader only means anything in those two modes. Anywhere
+        // else it would just be a stale, misleading leftover from whatever
+        // it last was in another mode. Same visibility-gating pattern as
+        // hiding Clock-only controls in Slice Length mode, just applied to
+        // painting here instead of a juce::Component's setVisible().
+        const auto sliceModeForFader = processor.getTriggerMode();
+        if (sliceModeForFader != SlicerAudioProcessor::TriggerMode::sliceLength
+            && sliceModeForFader != SlicerAudioProcessor::TriggerMode::clock)
             continue;
 
         // Probability fader: a translucent bar spanning this slice's full
@@ -484,6 +488,15 @@ WaveformDisplay::TrimHandle WaveformDisplay::findTrimHandleNear (int x) const
 
 void WaveformDisplay::setProbabilityFromMouse (const juce::MouseEvent& event)
 {
+    // Same Slice Length/Clock-only gate as the fader's own painting in
+    // paint() -- without this, a click/drag on the waveform in another
+    // mode would silently rewrite Generate mode's slice weights with no
+    // visual feedback at all (the fader isn't drawn there).
+    const auto mode = processor.getTriggerMode();
+    if (mode != SlicerAudioProcessor::TriggerMode::sliceLength
+        && mode != SlicerAudioProcessor::TriggerMode::clock)
+        return;
+
     const int sliceIndex = getSliceIndexAtX (event.x);
 
     if (sliceIndex < 0)

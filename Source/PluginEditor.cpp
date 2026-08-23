@@ -26,6 +26,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
           p.getPerformanceWorkingStyle() + 1,
           [&p] (int style) { p.setPerformanceWorkingStyle (style); }),
       performanceKeyboardSource (p), performanceKeyboardPanel (performanceKeyboardSource),
+      controlStyleParameterPanel (p),
       sequencerGrid (p), waveformDisplay (p)
 {
     addAndMakeVisible (controlsContent); // Pass 3: Layers 1-4, plain non-scrolling child
@@ -667,10 +668,27 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         subModeContent.addAndMakeVisible (label);
         label.setJustificationType (juce::Justification::centredLeft);
         label.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
+        label.addMouseListener (this, false); // click-to-select -- routed through this editor's own mouseDown() override
     }
+
+    subModeContent.addAndMakeVisible (controlStyleParametersLabel);
+    controlStyleParametersLabel.setText ("Style parameters", juce::dontSendNotification);
+    controlStyleParametersLabel.setJustificationType (juce::Justification::centredLeft);
+
+    // Bound to the same global default storage as Generate's own
+    // playbackStyleParameterPanel (no getValue/setValue lambdas passed --
+    // see PlaybackStyleParameterPanel's constructor, which falls back to
+    // getSequencerCellParameterGlobalValue()/setSequencerCellParameterGlobalValue()
+    // when left null). The keyswitch rows above are this panel's external
+    // style selector, same relationship playbackStyleSegments has to
+    // playbackStyleParameterPanel on the Generate page, so its own internal
+    // ComboBox stays hidden.
+    subModeContent.addAndMakeVisible (controlStyleParameterPanel);
+    controlStyleParameterPanel.setStyleSelectorVisible (false);
 
     updateControlBaseNoteDisplay();
     updateControlKeyswitchRows();
+    updateControlStyleParameterPanelVisibility();
 
     subModeContent.addAndMakeVisible (sequencerViewport);
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
@@ -1414,7 +1432,34 @@ int SlicerAudioProcessorEditor::layoutControlTab (int contentWidth, int startY)
         area.removeFromTop (4);
     }
 
+    // Style parameter panel -- reserved space, hidden via setVisible()
+    // rather than skipped here, same "always lay it out, toggle visibility
+    // separately" convention as the Clock-only/Slice-Length-only control
+    // groups above use (see their own doc comments in PluginEditor.h).
+    area.removeFromTop (14);
+    controlStyleParametersLabel.setBounds (area.removeFromTop (20));
+    controlStyleParameterPanel.setBounds (area.removeFromTop (PlaybackStyleParameterPanel::getPreferredHeight()));
+
     return sacrificialHeight - area.getHeight();
+}
+
+void SlicerAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
+{
+    // Only the keyswitch rows register this editor as a mouse listener
+    // (see the constructor), so a hit here always means one of those was
+    // clicked -- acts as this row's own style tab, same interaction as
+    // Generate's playbackStyleSegments driving playbackStyleParameterPanel.
+    for (int i = 0; i < SlicerAudioProcessor::numPlaybackStyleOptions; ++i)
+    {
+        if (event.eventComponent != &controlKeyswitchLabels[(size_t) i])
+            continue;
+
+        controlSelectedKeyswitchStyle = i;
+        controlStyleParameterPanel.setSelectedStyle (i);
+        updateControlKeyswitchRows(); // refresh the selection highlight
+        updateControlStyleParameterPanelVisibility();
+        return;
+    }
 }
 
 void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
@@ -1636,9 +1681,24 @@ void SlicerAudioProcessorEditor::updateControlKeyswitchRows()
             ? juce::MidiMessage::getMidiNoteName (note, true, true, 3)
             : juce::String ("unreachable"); // base note set low enough that this style's fixed slot falls outside 0-127
 
-        controlKeyswitchLabels[(size_t) i].setText (
-            SlicerAudioProcessor::getPlaybackStyleName (i) + ": " + noteName, juce::dontSendNotification);
+        auto& label = controlKeyswitchLabels[(size_t) i];
+        label.setText (SlicerAudioProcessor::getPlaybackStyleName (i) + ": " + noteName, juce::dontSendNotification);
+
+        // Selection highlight -- same "which row is the active tab" cue
+        // SegmentedButtonRow gives its selected segment, just expressed via
+        // a plain Label's own colours since these rows aren't that
+        // component.
+        const bool selected = i == controlSelectedKeyswitchStyle;
+        label.setColour (juce::Label::textColourId, selected ? juce::Colours::white : juce::Colours::white.withAlpha (0.7f));
+        label.setColour (juce::Label::backgroundColourId, selected ? juce::Colours::white.withAlpha (0.12f) : juce::Colours::transparentBlack);
     }
+}
+
+void SlicerAudioProcessorEditor::updateControlStyleParameterPanelVisibility()
+{
+    const bool showPanel = subModeTabs.getSelectedIndex() == 2 && controlSelectedKeyswitchStyle >= 0;
+    controlStyleParametersLabel.setVisible (showPanel);
+    controlStyleParameterPanel.setVisible (showPanel);
 }
 
 void SlicerAudioProcessorEditor::updatePitchModeVisibility()
@@ -1743,6 +1803,8 @@ void SlicerAudioProcessorEditor::updateActiveTabVisibility()
         updateControlBaseNoteDisplay();
         updateControlKeyswitchRows();
     }
+
+    updateControlStyleParameterPanelVisibility(); // hides the panel outright when Control isn't the active tab
 }
 
 void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
