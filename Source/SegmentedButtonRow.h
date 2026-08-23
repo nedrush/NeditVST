@@ -8,10 +8,10 @@
     native ComboBox/TextButton chrome) with one option highlighted as
     selected -- the reusable building block behind Pitch Mode/Trigger Mode's
     segmented rows and the Playback Style selector on the Generate page, and
-    also reused directly (not wrapped in a separate class) as both the
-    top-level Beats/Textures tab row and the Generate/Sequence/Control/Perform
-    sub-mode tab row in PluginEditor -- a tab bar is exactly this component's
-    use case, so there's no separate TabBar class.
+    also reused directly (not wrapped in a separate class) as the
+    Generate/Sequence/Control/Perform sub-mode tab row in PluginEditor -- a
+    tab bar is exactly this component's use case, so there's no separate
+    TabBar class.
 
     Segments are laid out as equal-width slices of getLocalBounds() in
     resized(), separated by a small gap. Each option optionally carries its

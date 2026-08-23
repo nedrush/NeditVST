@@ -8,22 +8,12 @@ namespace
     // never drift out of sync with each other.
     constexpr int windowMargin = 20;         // matches getLocalBounds().reduced (windowMargin) below
     constexpr int headerTextHeight = 30;     // space for paint()'s header text
-    constexpr int layoutGap = 14;            // vertical/horizontal gap between Layer 1/2/3/4/5 sections
+    constexpr int layoutGap = 14;            // vertical/horizontal gap between the universal layer/Playback Style/sub-mode tab row/Layer 5 sections
     constexpr int controlsToZoomGap = 20;
     constexpr int zoomRowHeight = 30;
     constexpr int zoomToWaveformGap = 10;
     constexpr int minWaveformHeight = 190;   // Pass 3: the window now grows to guarantee this rather than squeezing whatever space is left
-    constexpr int minContentWidth = 1000;    // floor so Layer 2/3/4's tab rows/segmented rows/sequencer grid have comfortable room even if Layer 1's own natural width comes in narrower
-}
-
-void SlicerAudioProcessorEditor::ComingSoonPanel::paint (juce::Graphics& g)
-{
-    g.setColour (NeditPalette::tungsten);
-    g.fillRect (getLocalBounds());
-
-    g.setColour (NeditPalette::textOnTungsten.withAlpha (0.6f));
-    g.setFont (16.0f);
-    g.drawFittedText (message, getLocalBounds(), juce::Justification::centred, 1);
+    constexpr int minContentWidth = 1000;    // floor so the sub-mode tab row/segmented rows/sequencer grid have comfortable room even if Layer 1's own natural width comes in narrower
 }
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
@@ -50,12 +40,9 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     subModeViewport.setScrollBarsShown (true, false); // vertical only, shown when needed
     subModeContent.setLookAndFeel (&neditLookAndFeel);
 
-    // Pass 1 tab structure -- added first so every page/section beneath it
-    // paints on top (SectionPanel/ComingSoonPanel are pure backdrops, added
-    // here purely for correct paint z-order, not for layout).
-    controlsContent.addAndMakeVisible (topLevelModeTabs);
-    topLevelModeTabs.setOptions ({ { "Beats", std::nullopt }, { "Textures", std::nullopt } });
-
+    // Sub-mode tab row -- added first so every page/section beneath it
+    // paints on top (SectionPanel is a pure backdrop, added here purely for
+    // correct paint z-order, not for layout).
     controlsContent.addAndMakeVisible (subModeTabs);
     subModeTabs.setOptions ({ { "Generate", std::nullopt }, { "Sequence", std::nullopt },
                                { "Control", std::nullopt }, { "Perform", std::nullopt } });
@@ -77,7 +64,6 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
             lastGenerateTriggerMode = SlicerAudioProcessor::TriggerMode::clock;
     }
 
-    topLevelModeTabs.onSelectionChanged = [this] (int) { updateActiveTabVisibility(); syncTriggerModeToActiveTab(); resized(); };
     subModeTabs.onSelectionChanged = [this] (int) { updateActiveTabVisibility(); syncTriggerModeToActiveTab(); resized(); };
 
     controlsContent.addAndMakeVisible (sampleSectionPanel);
@@ -87,7 +73,6 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     controlsContent.addAndMakeVisible (pitchModeSectionPanel);
     controlsContent.addAndMakeVisible (playbackStyleSectionPanel);
     subModeContent.addAndMakeVisible (timingSectionPanel);
-    subModeContent.addAndMakeVisible (texturesPlaceholder);
 
     controlsContent.addAndMakeVisible (loadButton);
     loadButton.addListener (this);
@@ -691,27 +676,24 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
     sequencerViewport.setScrollBarsShown (true, true);
 
-    // Pass 4 five-layer structure -- every component belonging to Layer 1
-    // (truly universal, both Beats and Textures), Layer 3 (the Beats-
-    // specific block: Reset Edits+Undo+Redo, Tempo, Detection, Fade In/Out,
-    // Pitch Mode, Playback Style -- Beats-only), or Generate/Sequence/Perform
-    // specifically, for updateActiveTabVisibility()'s blanket show/hide (see
-    // its own doc comment). Populated here, now that every control
+    // Pass 6 single universal layer -- every component that's unconditionally
+    // visible regardless of the active sub-mode tab (Sample, plus what used
+    // to be the separate Beats-specific block: Reset Edits+Undo+Redo, Tempo,
+    // Detection, Fade In/Out, Pitch Mode), for updateActiveTabVisibility()'s
+    // blanket show (see its own doc comment). Playback Style's own
+    // components are deliberately NOT here -- their visibility is
+    // mode-specific (Generate/Sequence only), set directly in
+    // updateActiveTabVisibility(). Populated here, now that every control
     // referenced below is fully constructed.
     universalComponents = {
-        &sampleSectionPanel, &loadButton, &statusLabel
-    };
-
-    beatsStyleComponents = {
-        &trimTempoSectionPanel, &detectionSectionPanel, &fadeSectionPanel, &pitchModeSectionPanel, &playbackStyleSectionPanel,
+        &sampleSectionPanel, &loadButton, &statusLabel,
+        &trimTempoSectionPanel, &detectionSectionPanel, &fadeSectionPanel, &pitchModeSectionPanel,
         &resetEditsButton, &undoButton, &redoButton,
         &auditionButton, &loopLengthLabel, &loopLengthSlider, &calculatedBpmLabel,
         &manualBpmOverrideToggle, &manualBpmOverrideLabel, &manualBpmOverrideSlider,
         &fadeInLabel, &fadeInSlider, &fadeOutLabel, &fadeOutSlider,
         &sensitivityLabel, &sensitivitySlider, &quantizeTransientsToggle, &quantizeGridLabel, &quantizeGridSelector,
-        &pitchModeLabel, &pitchModeSegments, &beatQuantizeToggleRepitch, &pitchModeExtraViewport,
-        &playbackStyleSegments, &playbackStyleLabel, &playbackStyleGrid,
-        &playbackStyleParametersLabel, &playbackStyleParameterViewport
+        &pitchModeLabel, &pitchModeSegments, &beatQuantizeToggleRepitch, &pitchModeExtraViewport
     };
 
     generateComponents = {
@@ -809,12 +791,11 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
     // SectionPanel's visual area the knob ends up (getLocalArea() doesn't
     // care, only real bounds
     // matter -- see SectionPanel's own class doc comment). Loop Length is
-    // part of the Beats-specific block now (Pass 4) -- Beats-only, unlike
-    // Layer 1's now-minimal Sample panel -- so the label's own visibility
-    // guard actually does something again (false while Textures is active).
-    // No clip region needed: with controlsViewport gone, loopLengthLabel/
-    // Slider are always either fully on-screen or not, never scrolled
-    // partway out of view.
+    // part of the single universal layer (Pass 6) -- always visible
+    // regardless of the active sub-mode tab, so the isVisible() guard below
+    // is really just a defensive check now. No clip region needed: with
+    // controlsViewport gone, loopLengthLabel/Slider are always either fully
+    // on-screen or not, never scrolled partway out of view.
     if (loopLengthNeedsAttention && loopLengthLabel.isVisible())
     {
         const auto labelBounds = getLocalArea (&loopLengthLabel, loopLengthLabel.getLocalBounds());
@@ -875,25 +856,19 @@ juce::Rectangle<int> SlicerAudioProcessorEditor::sectionContentArea (const Secti
 
 int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
 {
-    // Pass 4 -- Layers 1-4 only (Layer 5 is layoutSubModeContent() below,
-    // inside the scrolling subModeViewport). Layer 1 (universal Sample
-    // panel) lays out first, then Layer 2 (Beats/Textures tabs); below
-    // that, Layer 3 (the Beats-specific block -- Reset Edits+Undo+Redo/
-    // Tempo/Detection/Fade/Pitch Mode via layoutBeatsControlsRow(), then
-    // Playback Style via layoutPlaybackStyleSection()) and Layer 4
-    // (Generate/Sequence/Control/Perform tabs) are ALWAYS laid out -- even
-    // while Textures is selected -- purely so this function reports the
-    // exact same total height regardless of tab selection (Layers 1-4 never
-    // scroll or resize). Only their VISIBILITY is Beats-gated, in
+    // Pass 6 -- the single universal layer (Sample via layoutTopToolbar(),
+    // then Reset Edits+Undo+Redo/Tempo/Detection/Fade/Pitch Mode via
+    // layoutUniversalControlsRow()) followed by the mode-specific Playback
+    // Style area (layoutPlaybackStyleSection()) and the sub-mode tab row.
+    // All of it is ALWAYS laid out regardless of which sub-mode tab is
+    // active -- only Playback Style's own VISIBILITY (and so, indirectly,
+    // the height it reports) varies with the active tab; see
     // updateActiveTabVisibility().
     int y = layoutTopToolbar (0);
     y += layoutGap;
 
-    topLevelModeTabs.setBounds (0, y, contentWidth, SegmentedButtonRow::preferredHeight);
-    y += SegmentedButtonRow::preferredHeight + layoutGap;
-
-    const int beatsControlsHeight = layoutBeatsControlsRow (y);
-    y += beatsControlsHeight + layoutGap;
+    const int universalControlsHeight = layoutUniversalControlsRow (y);
+    y += universalControlsHeight + layoutGap;
 
     const int playbackStyleHeight = layoutPlaybackStyleSection (contentWidth, y);
     y += playbackStyleHeight + layoutGap;
@@ -906,14 +881,9 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
 
 int SlicerAudioProcessorEditor::layoutSubModeContent (int contentWidth)
 {
-    // Layer 5 -- whichever of Generate/Sequence/Control/Perform/Textures is
-    // actually active, laid out inside subModeContent starting at y == 0
+    // Layer 5 -- whichever of Generate/Sequence/Control/Perform is actually
+    // active, laid out inside subModeContent starting at y == 0
     // (subModeViewport handles scroll position, not this function).
-    const bool beats = topLevelModeTabs.getSelectedIndex() == 0;
-
-    if (! beats)
-        return layoutTexturesPlaceholder (contentWidth, 0);
-
     switch (subModeTabs.getSelectedIndex())
     {
         case 1: return layoutSequenceTab (contentWidth, 0);
@@ -928,13 +898,13 @@ void SlicerAudioProcessorEditor::updateWindowSize()
     // Pass 5 -- extracted from what used to be the constructor's own
     // one-time measurement pass (Pass 4), now reusable: Pitch Mode's and
     // Playback Style's own panel heights vary by mode/style (see
-    // layoutBeatsControlsRow()/layoutPlaybackStyleSection()), so this has to
-    // be able to run again after construction too, not just once.
+    // layoutUniversalControlsRow()/layoutPlaybackStyleSection()), so this has
+    // to be able to run again after construction too, not just once.
     //
-    // The Beats-specific block's own self-sizing cluster (Reset Edits+Undo+
+    // The universal controls row's own self-sizing cluster (Reset Edits+Undo+
     // Redo/Tempo/Detection/Fade/Pitch Mode) doesn't depend on contentWidth --
     // it's laid out in two explicit rows of content-sized panels/clusters
-    // (see layoutBeatsControlsRow()), and its own natural width is what
+    // (see layoutUniversalControlsRow()), and its own natural width is what
     // DEFINES contentWidth for every layer, not the other way around (Layer
     // 1's own Sample panel is much narrower and can't anchor this on its
     // own). Laying it out at startY == 0 here is the same call
@@ -944,7 +914,7 @@ void SlicerAudioProcessorEditor::updateWindowSize()
     // panel that defines it has a compile-time-constant width, unaffected by
     // mode/style), so windowWidth never actually changes here -- only
     // windowHeight does.
-    layoutBeatsControlsRow (0); // side effect only here -- layoutControlsContent() below re-derives the actual height it needs
+    layoutUniversalControlsRow (0); // side effect only here -- layoutControlsContent() below re-derives the actual height it needs
 
     const int contentWidth = juce::jmax (trimTempoSectionPanel.getRight(), pitchModeSectionPanel.getRight(), minContentWidth);
 
@@ -967,11 +937,10 @@ void SlicerAudioProcessorEditor::updateWindowSize()
 
 int SlicerAudioProcessorEditor::layoutTopToolbar (int startY)
 {
-    // Layer 1 (Pass 4) -- truly universal to both Beats and Textures: just
-    // Sample (Load button, status label) now. Everything that used to sit
-    // beside it here (Reset Edits+Undo+Redo, Tempo, Detection, Fade In/Out,
-    // Pitch Mode) moved into layoutBeatsControlsRow() below, since none of
-    // it means anything for Textures.
+    // Layer 1 (Pass 4) -- Sample (Load button, status label) only.
+    // Everything else in the universal layer (Reset Edits+Undo+Redo, Tempo,
+    // Detection, Fade In/Out, Pitch Mode) is laid out by
+    // layoutUniversalControlsRow() below.
     constexpr int sectionSacrificialHeight = 400;
     constexpr int sampleWidth = 220;
 
@@ -991,17 +960,17 @@ int SlicerAudioProcessorEditor::layoutTopToolbar (int startY)
     return panelHeight;
 }
 
-int SlicerAudioProcessorEditor::layoutBeatsControlsRow (int startY)
+int SlicerAudioProcessorEditor::layoutUniversalControlsRow (int startY)
 {
-    // Layer 3 (Pass 4) -- the Beats-specific block's own self-sizing
-    // cluster: Reset Edits+Undo+Redo, Tempo, Detection, Fade In/Out, Pitch
-    // Mode, arranged as two explicit rows of content-sized panels/clusters
-    // rather than a generic wrap-at-width algorithm -- same approach
-    // layoutTopToolbar() itself used pre-Pass-4, before Sample split out
-    // into its own universal Layer 1: each panel's own natural width is
-    // what DEFINES contentWidth for every layer below it (see the
-    // constructor's one-time measurement pass), not the other way around,
-    // so there's no contentWidth to wrap against here in the first place.
+    // Universal controls row (Pass 4/6) -- Reset Edits+Undo+Redo, Tempo,
+    // Detection, Fade In/Out, Pitch Mode, arranged as two explicit rows of
+    // content-sized panels/clusters rather than a generic wrap-at-width
+    // algorithm -- same approach layoutTopToolbar() itself used pre-Pass-4,
+    // before Sample split out into its own Layer 1: each panel's own
+    // natural width is what DEFINES contentWidth for every layer below it
+    // (see the constructor's one-time measurement pass), not the other way
+    // around, so there's no contentWidth to wrap against here in the first
+    // place.
     constexpr int panelGap = 14;
     constexpr int sectionSacrificialHeight = 400;
 
@@ -1179,20 +1148,35 @@ int SlicerAudioProcessorEditor::layoutBeatsControlsRow (int startY)
 
 int SlicerAudioProcessorEditor::layoutPlaybackStyleSection (int contentWidth, int startY)
 {
-    // Layer 3 (Pass 4/5) -- Playback Style, the last piece of the Beats-
-    // specific block (after layoutBeatsControlsRow()'s Reset Edits+Undo+
-    // Redo/Tempo/Detection/Fade/Pitch Mode cluster). Beats-only but laid out
-    // unconditionally by layoutControlsContent() (see its own doc comment).
+    // Playback Style, directly below the universal controls row (Pass 4/5/6).
+    // Laid out unconditionally by layoutControlsContent() (see its own doc
+    // comment), but WHAT it lays out -- and so the height it reports --
+    // depends on the active sub-mode tab: Generate gets the full selector +
+    // probability table + parameter panel (bound to the global default);
+    // Sequence gets the probability table alone; Control/Perform get none of
+    // it (Perform has its own separate performanceStyleParameterPanel
+    // elsewhere instead, bound to the focused state's own working
+    // accessors). Actual show/hide is applied by
+    // updateActiveTabVisibility(), not here -- this only decides bounds.
     constexpr int sectionSacrificialHeight = 1200;
+
+    const int subIndex = subModeTabs.getSelectedIndex();
+    const bool showTable = subIndex == 0 || subIndex == 1;   // Generate or Sequence
+    const bool showSelectorAndParams = subIndex == 0;        // Generate only
+
+    if (! showTable)
+    {
+        playbackStyleSectionPanel.setBounds (0, startY, contentWidth, 0);
+        return 0;
+    }
 
     // Parameter viewport height (Pass 5) -- capped at 80 (same "comfortably
     // shows a handful of rows; scrolls for the rest" budget Pass 3
-    // introduced), but now sized to the CURRENTLY SELECTED style's own
-    // actual row count instead of always paying that flat 80 regardless of
-    // which style is active. The default style ("Forward") needs zero
-    // parameter rows, so this used to reserve 80px of dead space at startup
-    // for nothing. The editor resizes itself (updateWindowSize()) whenever
-    // playbackStyleSegments changes, since this height now varies by style.
+    // introduced), but sized to the CURRENTLY SELECTED style's own actual
+    // row count instead of always paying that flat 80 regardless of which
+    // style is active. The editor resizes itself (updateWindowSize())
+    // whenever playbackStyleSegments changes, since this height now varies
+    // by style.
     constexpr int maxParameterViewportHeight = 80;
     const int selectedStyle = juce::jlimit (0, SlicerAudioProcessor::numPlaybackStyleOptions - 1, playbackStyleSegments.getSelectedIndex());
     const int selectedStylePreferredHeight = PlaybackStyleParameterPanel::getPreferredHeightForStyle (selectedStyle);
@@ -1202,17 +1186,23 @@ int SlicerAudioProcessorEditor::layoutPlaybackStyleSection (int contentWidth, in
     auto content = sectionContentArea (playbackStyleSectionPanel);
     const int startHeight = content.getHeight();
 
-    playbackStyleSegments.setBounds (content.removeFromTop (SegmentedButtonRow::preferredHeight));
-    content.removeFromTop (10);
+    if (showSelectorAndParams)
+    {
+        playbackStyleSegments.setBounds (content.removeFromTop (SegmentedButtonRow::preferredHeight));
+        content.removeFromTop (10);
+    }
 
     playbackStyleLabel.setBounds (content.removeFromTop (20));
     playbackStyleGrid.setBounds (content.removeFromTop (PlaybackStyleGrid::getPreferredHeight()));
-    content.removeFromTop (14);
 
-    playbackStyleParametersLabel.setBounds (content.removeFromTop (20));
-    playbackStyleParameterViewport.setBounds (content.removeFromTop (parameterViewportHeight));
-    playbackStyleParameterPanel.setSize (playbackStyleParameterViewport.getWidth() - playbackStyleParameterViewport.getScrollBarThickness(),
-                                          selectedStylePreferredHeight);
+    if (showSelectorAndParams)
+    {
+        content.removeFromTop (14);
+        playbackStyleParametersLabel.setBounds (content.removeFromTop (20));
+        playbackStyleParameterViewport.setBounds (content.removeFromTop (parameterViewportHeight));
+        playbackStyleParameterPanel.setSize (playbackStyleParameterViewport.getWidth() - playbackStyleParameterViewport.getScrollBarThickness(),
+                                              selectedStylePreferredHeight);
+    }
 
     const int consumed = startHeight - content.getHeight();
     const int panelHeight = SectionPanel::titleBarHeight + consumed + 12;
@@ -1224,12 +1214,13 @@ int SlicerAudioProcessorEditor::layoutPlaybackStyleSection (int contentWidth, in
 int SlicerAudioProcessorEditor::layoutGenerateTab (int contentWidth, int startY)
 {
     // Generate's own local content (Pass 2) -- everything else that used to
-    // live here (Sample/Trim & Tempo/Detection/Pitch Mode/Playback Style)
-    // is Layer 1/Layer 3 now (Pass 4), laid out by layoutTopToolbar()/
-    // layoutBeatsControlsRow()/layoutPlaybackStyleSection() above this on
-    // every tab. All that's left is which of Slice Length/Clock
-    // times the engine, plus whichever of that choice's own sub-controls
-    // apply.
+    // live here (Sample/Trim & Tempo/Detection/Pitch Mode) is part of the
+    // universal layer now (Pass 6), laid out by layoutTopToolbar()/
+    // layoutUniversalControlsRow() above this on every tab; Playback Style
+    // (layoutPlaybackStyleSection()) is also laid out above this, mode-
+    // specific but fully shown for Generate specifically. All that's left
+    // here is which of Slice Length/Clock times the engine, plus whichever
+    // of that choice's own sub-controls apply.
     constexpr int sacrificialHeight = 4000;
     constexpr int panelGap = 14;
     constexpr int sectionSacrificialHeight = 1200;
@@ -1301,7 +1292,7 @@ int SlicerAudioProcessorEditor::layoutSequenceTab (int contentWidth, int startY)
 
     // Sized to actual content (Pass 2) rather than stretched to fill the
     // row, same reasoning as Load Sample in layoutTopToolbar()/Audition in
-    // layoutBeatsControlsRow().
+    // layoutUniversalControlsRow().
     auto randomizeClearRow = area.removeFromTop (30);
     randomizeSequenceButton.setBounds (randomizeClearRow.removeFromLeft (randomizeSequenceButton.getBestWidthForHeight (30) + 24));
     randomizeClearRow.removeFromLeft (10);
@@ -1424,13 +1415,6 @@ int SlicerAudioProcessorEditor::layoutControlTab (int contentWidth, int startY)
     }
 
     return sacrificialHeight - area.getHeight();
-}
-
-int SlicerAudioProcessorEditor::layoutTexturesPlaceholder (int contentWidth, int startY)
-{
-    constexpr int height = 200;
-    texturesPlaceholder.setBounds (0, startY, contentWidth, height);
-    return height;
 }
 
 void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
@@ -1686,42 +1670,40 @@ void SlicerAudioProcessorEditor::updatePitchModeVisibility()
 
 void SlicerAudioProcessorEditor::updateActiveTabVisibility()
 {
-    const bool beats = topLevelModeTabs.getSelectedIndex() == 0;
     const int subIndex = subModeTabs.getSelectedIndex();
-    const bool generateActive = beats && subIndex == 0;
-    const bool sequenceActive = beats && subIndex == 1;
-    const bool controlActive = beats && subIndex == 2;
-    const bool performActive = beats && subIndex == 3;
+    const bool generateActive = subIndex == 0;
+    const bool sequenceActive = subIndex == 1;
+    const bool controlActive = subIndex == 2;
+    const bool performActive = subIndex == 3;
 
-    subModeTabs.setVisible (beats);
-    texturesPlaceholder.setVisible (! beats);
-
-    // Layer 1 (Pass 4) -- truly universal, shown regardless of Beats/Textures
-    // (unconditionally true, unlike every other group below). Just Sample now.
+    // Single universal layer (Pass 6) -- Sample plus what used to be the
+    // separate Beats-specific block (Reset Edits+Undo+Redo, Tempo,
+    // Detection, Fade In/Out, Pitch Mode), unconditionally visible
+    // regardless of which sub-mode tab is active.
     for (auto* c : universalComponents)
         c->setVisible (true);
 
-    // Layer 3 -- the Beats-specific block (Reset Edits+Undo+Redo, Tempo,
-    // Detection, Fade In/Out, Pitch Mode, Playback Style), Beats-only but
-    // shown regardless of which of the four sub-mode tabs, since it applies
-    // to all of them (e.g. Sequence's Randomize needs Playback Style's
-    // weights, and Sequence/Control/Perform all still want the sample's
-    // tempo/detection/fade/pitch-mode controls visible).
-    for (auto* c : beatsStyleComponents)
-        c->setVisible (beats);
+    // Fine-grained sub-visibility WITHIN the universal layer (Repitch vs
+    // Time-Stretch, Grid dropdown, BPM field).
+    updatePitchModeVisibility();
+    updateManualBpmOverrideVisibility();
+    updateQuantizeTransientsVisibility();
 
-    if (beats)
-    {
-        // Fine-grained sub-visibility WITHIN the Beats-specific block
-        // (Repitch vs Time-Stretch, Grid dropdown, BPM field) -- guarded on
-        // beats now that these controls live there instead of Layer 1,
-        // since running them unconditionally would re-show some of their
-        // sub-widgets even while Textures is active and the coarse
-        // beatsStyleComponents pass just above hid the whole group.
-        updatePitchModeVisibility();
-        updateManualBpmOverrideVisibility();
-        updateQuantizeTransientsVisibility();
-    }
+    // Playback Style area -- mode-specific (Pass 6): Generate shows the
+    // probability table + style-selector + parameter panel, bound to the
+    // global default; Sequence shows the probability table alone (Randomize
+    // reads from it); Control/Perform show none of it -- Perform has its own
+    // separate performanceStyleParameterPanel below instead (see
+    // performComponents), bound to the focused state's own working
+    // accessors, untouched by this group.
+    const bool showPlaybackStyleTable = generateActive || sequenceActive;
+    const bool showPlaybackStyleSelectorAndParams = generateActive;
+    playbackStyleSectionPanel.setVisible (showPlaybackStyleTable);
+    playbackStyleLabel.setVisible (showPlaybackStyleTable);
+    playbackStyleGrid.setVisible (showPlaybackStyleTable);
+    playbackStyleSegments.setVisible (showPlaybackStyleSelectorAndParams);
+    playbackStyleParametersLabel.setVisible (showPlaybackStyleSelectorAndParams);
+    playbackStyleParameterViewport.setVisible (showPlaybackStyleSelectorAndParams);
 
     for (auto* c : generateComponents)
         c->setVisible (generateActive);
@@ -1767,9 +1749,6 @@ void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
 {
     using TM = SlicerAudioProcessor::TriggerMode;
 
-    if (topLevelModeTabs.getSelectedIndex() != 0) // Textures: no trigger-mode implication
-        return;
-
     const TM desired = subModeTabs.getSelectedIndex() == 1 ? TM::sequenced    // Sequence tab
                       : subModeTabs.getSelectedIndex() == 2 ? TM::control     // Control tab
                       : subModeTabs.getSelectedIndex() == 3 ? TM::performance // Perform tab
@@ -1799,7 +1778,7 @@ void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
     // active would incorrectly re-show Generate-only controls that
     // updateActiveTabVisibility()'s blanket hide (called just before this,
     // from both tab rows' onSelectionChanged) already turned off.
-    if (topLevelModeTabs.getSelectedIndex() == 0 && subModeTabs.getSelectedIndex() == 0)
+    if (subModeTabs.getSelectedIndex() == 0)
         updateSliceLengthClockVisibility();
 }
 

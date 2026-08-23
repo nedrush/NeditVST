@@ -98,35 +98,37 @@
     from the same weighted Playback Style probabilities Slice Length/Clock
     modes already use.
 
-    Pass 4 -- final five-layer structure. Layer 1 (Sample: Load button,
-    status label only) is a small, content-sized toolbar row, truly
-    universal to BOTH Beats and Textures, laid out by layoutTopToolbar() --
-    everything else that used to live there (Reset Edits+Undo+Redo, Tempo,
-    Detection, Fade In/Out, Pitch Mode) moved into the Beats-specific block
-    below, since none of it means anything for Textures. Layer 3 is now that
-    Beats-specific block: Reset Edits+Undo+Redo, Tempo, Detection, Fade
-    In/Out, Pitch Mode (laid out as a self-sizing two-row cluster by
-    layoutBeatsControlsRow(), the same explicit-row pattern layoutTopToolbar()
-    used pre-Pass-4) directly followed by Playback Style (selector,
-    probability weight table, parameter panel, laid out by
-    layoutPlaybackStyleSection(), unchanged) -- all of it Beats-only but
-    visible across all four Generate/Sequence/Control/Perform sub-mode tabs,
-    sitting between the Beats/Textures tabs and the sub-mode tab row
-    (matching the 1-2-3-4-5 layer order). Layers 1/2/3/4 (everything through
-    the sub-mode tab row) live directly in controlsContent and are ALWAYS
-    fully visible with zero scrolling -- that's the "universal, above
-    everything" part of the spec for Layer 1, and the "always visible while
-    Beats is active" part for Layer 3. Layer 5 (whichever of Generate/
-    Sequence/Control/Perform/Textures is actually active) is the one part of
-    this editor that still scrolls: it's tall and varies a lot tab to tab
-    (Sequence's grid+palette+pattern bank alone dwarfs Control's stub), and
-    reserving worst-case height for it in a genuinely fixed window measured
-    out taller than any real display (a 2268pt-tall window on a 1440pt-tall
-    screen, measured directly before this trade-off was made) -- so it gets
-    its own small internally-scrolling region instead, subModeViewport/
-    subModeContent, the same Viewport-wrapping-a-content-Component pattern
-    controlsContent itself used before this pass. Layer 3's own parameter
-    panel (playbackStyleParameterPanel) gets the same treatment via
+    Pass 6 -- Textures removed entirely (it never had a real engine, just a
+    "coming soon" stub), collapsing what used to be a Beats-vs-Textures
+    split back into one single universal layer: Sample (Load button, status
+    label, laid out by layoutTopToolbar()) directly followed by Reset
+    Edits+Undo+Redo, Tempo, Detection, Fade In/Out, Pitch Mode (laid out as a
+    self-sizing two-row cluster by layoutUniversalControlsRow()) -- all of it
+    unconditionally visible above all four Generate/Sequence/Control/Perform
+    sub-mode tabs now, with no top-level tab row above them anymore. Playback
+    Style (selector, probability weight table, parameter panel, laid out by
+    layoutPlaybackStyleSection()) sits directly below that, but its own
+    visibility is mode-specific rather than universal: Generate shows the
+    probability table + style-selector + parameter panel, bound to the
+    global default values (unchanged); Sequence shows the probability table
+    only (Randomize reads from it), since per-step parameter editing there
+    stays exclusively in SequencerGrid's own right-click popup; Perform shows
+    neither -- it has its own separate performanceStyleParameterPanel further
+    down, bound to the focused state's own working accessors (unchanged);
+    Control shows neither, silently using Generate's global defaults with no
+    dedicated UI surface of its own. Everything through the sub-mode tab row
+    lives directly in controlsContent and is ALWAYS fully visible with zero
+    scrolling. Layer 5 (whichever of Generate/Sequence/Control/Perform is
+    actually active) is the one part of this editor that still scrolls: it's
+    tall and varies a lot tab to tab (Sequence's grid+palette+pattern bank
+    alone dwarfs Control's stub), and reserving worst-case height for it in a
+    genuinely fixed window measured out taller than any real display (a
+    2268pt-tall window on a 1440pt-tall screen, measured directly before this
+    trade-off was made) -- so it gets its own small internally-scrolling
+    region instead, subModeViewport/subModeContent, the same
+    Viewport-wrapping-a-content-Component pattern controlsContent itself
+    used before this pass. The Playback Style parameter panel
+    (playbackStyleParameterPanel) gets the same treatment via
     playbackStyleParameterViewport, for the same reason (its own
     getPreferredHeight() reserves worst-case-across-all-styles row count).
     Loop Length and Transient Sensitivity (Pass 4) went back to plain
@@ -161,7 +163,7 @@ private:
     // Recomputes and re-applies the whole window's size (Pass 5). Pitch
     // Mode's and Playback Style's own panel heights now vary depending on
     // which mode/style is selected (mode-aware Pitch Mode sizing in
-    // layoutBeatsControlsRow(), per-style Playback Style parameter sizing in
+    // layoutUniversalControlsRow(), per-style Playback Style parameter sizing in
     // layoutPlaybackStyleSection()) -- the window size this editor computed
     // once at construction through Pass 4 no longer holds for every state,
     // so this must be called again whenever either can change (pitchModeSegments/
@@ -174,11 +176,11 @@ private:
     void updateWindowSize();
 
     // Layer 5 (Pass 3) -- dispatches to whichever of Generate/Sequence/
-    // Control/Perform/Textures is actually active, laid out inside
-    // subModeContent (viewed through subModeViewport, which scrolls when
-    // the active tab's content exceeds its fixed visible height -- see
-    // subModeViewport's own doc comment). Returns the total height the
-    // active tab's own content needs, which becomes subModeContent's size.
+    // Control/Perform is actually active, laid out inside subModeContent
+    // (viewed through subModeViewport, which scrolls when the active tab's
+    // content exceeds its fixed visible height -- see subModeViewport's own
+    // doc comment). Returns the total height the active tab's own content
+    // needs, which becomes subModeContent's size.
     int layoutSubModeContent (int contentWidth);
 
     // Lays out ONE tab's own controls, starting at local y == startY within
@@ -190,36 +192,41 @@ private:
     int layoutSequenceTab (int contentWidth, int startY); // existing Sequenced-mode flow, extracted verbatim
     int layoutPerformTab (int contentWidth, int startY); // existing Performance-mode flow, extracted verbatim
     int layoutControlTab (int contentWidth, int startY); // base note, slice range readout, Trigger/Gate toggle, keyswitch assignment rows + shared on-screen keyboard
-    int layoutTexturesPlaceholder (int contentWidth, int startY);
 
-    // Layer 1 (Pass 4) -- Sample only (Load button, status label), truly
-    // universal to both Beats and Textures. A single content-sized
+    // Layer 1 (Pass 4) -- Sample only (Load button, status label), part of
+    // the single universal layer (Pass 6). A single content-sized
     // SectionPanel. No contentWidth parameter -- unlike every sibling layout
     // function, this one's own natural width feeds into the constructor's
-    // one-time contentWidth measurement alongside layoutBeatsControlsRow()'s
+    // one-time contentWidth measurement alongside layoutUniversalControlsRow()'s
     // (see its own doc comment), not the other way around. Returns the total
     // height consumed.
     int layoutTopToolbar (int startY);
 
-    // Layer 3 (Pass 4) -- the Beats-specific block's own self-sizing cluster:
-    // Reset Edits+Undo+Redo, Tempo, Detection, Fade In/Out, Pitch Mode. Two
-    // explicit rows of content-sized SectionPanels/button clusters (mirrors
-    // the old layoutGlobalSection()'s measure-then-shrink SectionPanel
-    // pattern, just laid out side by side instead of stacked in one column;
-    // this is what layoutTopToolbar() itself did pre-Pass-4, before Sample
-    // split out into its own universal Layer 1). No contentWidth parameter --
-    // like layoutTopToolbar(), this one's own natural width is part of what
-    // DEFINES contentWidth for every layer below it (see the constructor's
-    // one-time measurement pass). Returns the total height consumed.
-    int layoutBeatsControlsRow (int startY);
+    // Universal controls row (Pass 4/6) -- Reset Edits+Undo+Redo, Tempo,
+    // Detection, Fade In/Out, Pitch Mode. Two explicit rows of content-sized
+    // SectionPanels/button clusters (mirrors the old layoutGlobalSection()'s
+    // measure-then-shrink SectionPanel pattern, just laid out side by side
+    // instead of stacked in one column; this is what layoutTopToolbar()
+    // itself did pre-Pass-4, before Sample split out into its own Layer 1).
+    // No contentWidth parameter -- like layoutTopToolbar(), this one's own
+    // natural width is part of what DEFINES contentWidth for every layer
+    // below it (see the constructor's one-time measurement pass). Shown
+    // unconditionally regardless of which sub-mode tab is active (Pass 6:
+    // there's no longer a Beats/Textures split to gate it on). Returns the
+    // total height consumed.
+    int layoutUniversalControlsRow (int startY);
 
-    // Layer 3 (Pass 3/4) -- Playback Style (selector, probability weight
-    // table, parameter panel), Beats-only but visible across all four
-    // sub-mode tabs. Split out of the old layoutGlobalSection() so it can
-    // sit between the Beats/Textures tabs and the Generate/Sequence/
-    // Control/Perform tabs, matching the spec's 1-2-3-4-5 layer order. Laid
-    // out directly below layoutBeatsControlsRow() -- together the two make
-    // up the whole Beats-specific block.
+    // Playback Style (selector, probability weight table, parameter panel),
+    // sitting directly below layoutUniversalControlsRow() and above the
+    // sub-mode tab row. Unlike the universal controls row, its visibility is
+    // mode-specific (Pass 6): Generate shows all of it (bound to the global
+    // default), Sequence shows just the probability table, and Control/
+    // Perform show none of it (Perform has its own separate
+    // performanceStyleParameterPanel instead, further down). Laid out
+    // unconditionally regardless of the active sub-mode (matching every
+    // other layer here that stays laid out even while hidden), but the
+    // amount of content -- and so the height returned -- varies with
+    // subModeTabs' current selection.
     int layoutPlaybackStyleSection (int contentWidth, int startY);
 
     // Absolute (controlsContent-local) content rect for a SectionPanel
@@ -230,22 +237,24 @@ private:
     // of the panel itself -- see SectionPanel's own class doc comment).
     static juce::Rectangle<int> sectionContentArea (const SectionPanel& panel);
 
-    // Shows/hides every top-level page (5 Generate sections, Sequence's
-    // controls, Perform's controls, Control/Textures placeholders) based on
-    // topLevelModeTabs/subModeTabs' current selection -- the tab-driven
-    // analogue of updateSliceLengthClockVisibility()'s mode-driven show/hide,
-    // called whenever either tab row changes.
+    // Shows/hides every top-level page (Generate's sections, Sequence's
+    // controls, Control's controls, Perform's controls) plus the
+    // mode-specific Playback Style area, based on subModeTabs' current
+    // selection -- the tab-driven analogue of
+    // updateSliceLengthClockVisibility()'s mode-driven show/hide, called
+    // whenever the tab row changes.
     void updateActiveTabVisibility();
 
-    // Maps the active tab combination onto processor.setTriggerMode() --
-    // Sequence tab -> sequenced, Perform tab -> performance, Generate/Control
-    // -> whichever of Slice Length/Clock Generate's own local timing row last
-    // selected. Guards against calling setTriggerMode() with the mode it's
-    // already in, since that method unconditionally resets clock/reset/
-    // sequenced/performance init flags and MIDI-learn state even for a
-    // same-mode call (see SlicerAudioProcessor::setTriggerMode()'s own doc
-    // comment) -- every tab-driven mode change must go through this, never
-    // call processor.setTriggerMode() directly from a tab callback.
+    // Maps the active sub-mode tab onto processor.setTriggerMode() --
+    // Sequence tab -> sequenced, Control tab -> control, Perform tab ->
+    // performance, Generate -> whichever of Slice Length/Clock Generate's
+    // own local timing row last selected. Guards against calling
+    // setTriggerMode() with the mode it's already in, since that method
+    // unconditionally resets clock/reset/sequenced/performance init flags
+    // and MIDI-learn state even for a same-mode call (see
+    // SlicerAudioProcessor::setTriggerMode()'s own doc comment) -- every
+    // tab-driven mode change must go through this, never call
+    // processor.setTriggerMode() directly from a tab callback.
     void syncTriggerModeToActiveTab();
 
     SlicerAudioProcessor& processor;
@@ -257,8 +266,8 @@ private:
     // below) since it's the one part that still scrolls.
     juce::Component controlsContent;
 
-    // Layer 5 (Pass 3) -- whichever of Generate/Sequence/Control/Perform/
-    // Textures is active lives in subModeContent, viewed through
+    // Layer 5 (Pass 3) -- whichever of Generate/Sequence/Control/Perform
+    // is active lives in subModeContent, viewed through
     // subModeViewport at a fixed visible height (subModeViewportHeight):
     // the one deliberate scrolling region left in this editor. A genuinely
     // fixed, scroll-free window sized to the tallest tab's worst case
@@ -278,15 +287,13 @@ private:
     // own doc comment for why), applied once in the constructor.
     NeditPalette::LookAndFeel neditLookAndFeel;
 
-    // Pass 1 tab structure: top-level Beats/Textures, and beneath it (only
-    // while Beats is selected) Generate/Sequence/Control/Perform. Both rows
-    // reuse SegmentedButtonRow directly rather than a separate TabBar class
-    // -- a tab bar is exactly that component's use case (mutually exclusive,
-    // click-to-select, get/set index for poll-and-resync). Only Generate has
-    // real content this pass; Sequence/Perform keep their existing controls
-    // (unstyled, just regated onto tab visibility instead of triggerMode);
-    // Control/Textures are trivial placeholders.
-    SegmentedButtonRow topLevelModeTabs; // "Beats" / "Textures"
+    // Sub-mode tab row: Generate/Sequence/Control/Perform, sitting directly
+    // beneath the single universal layer now that Textures (and the
+    // Beats/Textures tab row above this one) has been removed entirely
+    // (Pass 6). Reuses SegmentedButtonRow directly rather than a separate
+    // TabBar class -- a tab bar is exactly that component's use case
+    // (mutually exclusive, click-to-select, get/set index for
+    // poll-and-resync).
     SegmentedButtonRow subModeTabs; // "Generate" / "Sequence" / "Control" / "Perform"
 
     // Remembers which of Slice Length/Clock Generate's own Trigger Mode row
@@ -297,33 +304,33 @@ private:
     // Slice Length.
     SlicerAudioProcessor::TriggerMode lastGenerateTriggerMode = SlicerAudioProcessor::TriggerMode::sliceLength;
 
-    // Layer 1 section (Pass 4) -- truly universal to both Beats and
-    // Textures, laid out by layoutTopToolbar(), not gated on the Beats tab
-    // at all. Pure visual backdrop; the real controls below stay direct
-    // children of controlsContent, positioned inside its getContentArea()
-    // (see SectionPanel's own class doc comment for why it doesn't
-    // own/reparent them). Everything that used to sit alongside it here
-    // (Reset Edits+Undo+Redo, Tempo, Detection, Fade In/Out, Pitch Mode)
-    // moved into the Beats-specific block below (Pass 4) -- none of it means
-    // anything for Textures.
+    // Layer 1 section (Pass 4) -- part of the single universal layer
+    // (Pass 6), laid out by layoutTopToolbar(), never gated on the active
+    // sub-mode tab. Pure visual backdrop; the real controls below stay
+    // direct children of controlsContent, positioned inside its
+    // getContentArea() (see SectionPanel's own class doc comment for why it
+    // doesn't own/reparent them).
     SectionPanel sampleSectionPanel { "Sample" };
 
-    // Beats-specific block (Pass 4) -- Reset Edits+Undo+Redo, Tempo,
-    // Detection, Fade In/Out, Pitch Mode, Playback Style: Beats-only, but
-    // visible across all four sub-mode tabs (same reasoning Playback Style
-    // already used pre-Pass-4 -- e.g. Sequence's Randomize needs Playback
-    // Style's weights, and Sequence/Control/Perform all still want to see
-    // the sample's tempo/detection/fade/pitch-mode settings even though none
-    // of them expose their own copies). Laid out as a self-sizing two-row
-    // cluster by layoutBeatsControlsRow(), directly followed by Playback
-    // Style via layoutPlaybackStyleSection(). Pure visual backdrops, same
-    // convention as sampleSectionPanel above -- real controls stay direct
-    // children of controlsContent. Fade In/Out is its own panel, split out
-    // of what used to be a combined "Trim & Tempo" panel.
+    // Universal controls row (Pass 4/6) -- Reset Edits+Undo+Redo, Tempo,
+    // Detection, Fade In/Out, Pitch Mode: visible across all four sub-mode
+    // tabs unconditionally (e.g. Sequence/Control/Perform all still want to
+    // see the sample's tempo/detection/fade/pitch-mode settings even though
+    // none of them expose their own copies). Laid out as a self-sizing
+    // two-row cluster by layoutUniversalControlsRow(). Pure visual
+    // backdrops, same convention as sampleSectionPanel above -- real
+    // controls stay direct children of controlsContent. Fade In/Out is its
+    // own panel, split out of what used to be a combined "Trim & Tempo"
+    // panel.
     SectionPanel trimTempoSectionPanel { "Tempo" };
     SectionPanel detectionSectionPanel { "Detection" };
     SectionPanel fadeSectionPanel { "Fade In/Out" };
     SectionPanel pitchModeSectionPanel { "Pitch Mode" };
+
+    // Playback Style (Pass 3/4/6) -- directly below the universal controls
+    // row, laid out by layoutPlaybackStyleSection(). Unlike the universal
+    // row above, its visibility is mode-specific: shown (in full or in part)
+    // only for Generate/Sequence -- see updateActiveTabVisibility().
     SectionPanel playbackStyleSectionPanel { "Playback Style" };
 
     // Generate's own local section (Pass 2) -- the only thing left that's
@@ -335,34 +342,23 @@ private:
     // their own top-level sub-mode tabs.
     SectionPanel timingSectionPanel { "Timing" };
 
-    // Trivial stub placeholder -- Textures' engine doesn't exist at all yet.
-    // Beats>Control now has real content (see controlComponents below).
-    struct ComingSoonPanel : public juce::Component
-    {
-        explicit ComingSoonPanel (juce::String text) : message (std::move (text)) {}
-        void paint (juce::Graphics& g) override;
-        juce::String message;
-    };
-    ComingSoonPanel texturesPlaceholder { "Textures - coming soon" };
-
-    // Every component that belongs to Layer 1/Layer 3/Generate/Sequence/
+    // Every component that belongs to the universal layer/Generate/Sequence/
     // Perform respectively -- populated once in the constructor (after all
     // are fully constructed) and used purely for blanket setVisible() in
-    // updateActiveTabVisibility(), so leaving a tab (or leaving Beats
-    // entirely) doesn't require remembering to individually hide each of
-    // its controls one by one. universalComponents (Layer 1) is shown
-    // unconditionally -- both Beats and Textures -- and now (Pass 4) holds
-    // only Sample (Load button, status label): Reset Edits+Undo+Redo, Tempo,
-    // Detection, Fade In/Out, and Pitch Mode moved into beatsStyleComponents
-    // (Layer 3) alongside Playback Style, since none of them apply to
-    // Textures. beatsStyleComponents stays Beats-only regardless of which of
-    // the four sub-mode tabs; generateComponents is Generate's own local
-    // timing section only. Fine-grained sub-visibility WITHIN an active tab
-    // (Clock-only controls, Set Interval's own picker, etc.) is still
-    // handled by the existing updateSliceLengthClockVisibility()/
-    // updatePitchModeVisibility()/etc. functions, called after the blanket show.
+    // updateActiveTabVisibility(), so switching sub-mode tabs doesn't
+    // require remembering to individually hide each control one by one.
+    // universalComponents (Pass 6: Sample plus what used to be the separate
+    // Beats-specific block -- Reset Edits+Undo+Redo, Tempo, Detection, Fade
+    // In/Out, Pitch Mode) is shown unconditionally, regardless of which
+    // sub-mode tab is active. Playback Style's own components are NOT in
+    // this vector -- their visibility is mode-specific (Generate/Sequence
+    // only) and set directly in updateActiveTabVisibility() instead.
+    // generateComponents is Generate's own local timing section only. Fine-
+    // grained sub-visibility WITHIN an active tab (Clock-only controls, Set
+    // Interval's own picker, etc.) is still handled by the existing
+    // updateSliceLengthClockVisibility()/updatePitchModeVisibility()/etc.
+    // functions, called after the blanket show.
     std::vector<juce::Component*> universalComponents;
-    std::vector<juce::Component*> beatsStyleComponents;
     std::vector<juce::Component*> generateComponents;
     std::vector<juce::Component*> sequenceComponents;
     std::vector<juce::Component*> performComponents;
@@ -475,11 +471,13 @@ private:
     // to Generate itself.
     SegmentedButtonRow sliceLengthClockSegments;
 
-    // Playback style (Step 19/21) — global now (Pass 2): visible across all
-    // four Beats sub-mode tabs, not just Generate, since Sequence's own
-    // Randomize draws from these exact same per-style probability weights
-    // (see SequencerGrid's doc comment) and previously had no way to reach
-    // them without leaving its tab.
+    // Playback style (Step 19/21) — Generate-only now (Pass 6): shown
+    // alongside the probability table for Generate specifically. Sequence
+    // shows the probability table (playbackStyleGrid) alone, without this
+    // selector, since Sequence's own Randomize draws from these exact same
+    // per-style probability weights (see SequencerGrid's doc comment) but
+    // has no need for a persistent style-parameter panel of its own -- its
+    // per-step overrides stay in SequencerGrid's right-click popup instead.
     // Which style's PARAMETERS are currently shown in
     // playbackStyleParameterPanel below (Pass 1) -- purely a UI navigation
     // concept, independent of playbackStyleGrid's own per-style trigger
@@ -496,17 +494,15 @@ private:
     // Playback Style parameter panel -- a style picker + a persistent
     // panel of that style's own parameters (Static/Sweep In/Sweep Out
     // modes, sliders, discrete option pickers), all reusing the exact
-    // widgets SequencerGrid's right-click menu already uses. Global now
-    // (Pass 2) -- visible across all four Beats sub-mode tabs; Sequence's
-    // own per-step right-click editing is still additionally available
-    // there for step-level overrides, but the global panel now also sits
-    // above it for editing a style's shared/default parameters directly.
-    // Edits write straight into the same global-default storage a
-    // Sequencer step without its own override already falls back to.
-    // Pass 3 -- viewed through playbackStyleParameterViewport at a small
-    // fixed height rather than laid out inline at its own
-    // getPreferredHeight() (which reserves worst-case-across-all-styles row
-    // count): part of Layer 3, which lives in the always-visible,
+    // widgets SequencerGrid's right-click menu already uses. Generate-only
+    // (Pass 6) -- bound to the global default values. Sequence's own
+    // per-step right-click editing (SequencerGrid's popup) remains the only
+    // way to set per-step overrides there; edits made here write straight
+    // into the same global-default storage a Sequencer step without its own
+    // override already falls back to. Pass 3 -- viewed through
+    // playbackStyleParameterViewport at a small fixed height rather than
+    // laid out inline at its own getPreferredHeight() (which reserves
+    // worst-case-across-all-styles row count): lives in the always-visible,
     // non-scrolling controlsContent, so that reservation would otherwise be
     // paid in full, permanently, regardless of which style is selected.
     juce::Label playbackStyleParametersLabel;
