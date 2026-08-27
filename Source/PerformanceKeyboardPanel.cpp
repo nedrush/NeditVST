@@ -10,8 +10,7 @@ PerformanceKeyboardPanel::PerformanceKeyboardPanel (Source& sourceToUse)
       source (sourceToUse)
 {
     setAvailableRange (0, 127);
-    setKeyWidth (9.0f); // full 128-note range fits without scrolling at the editor's usual content width
-    setScrollButtonsVisible (true); // safety net if the editor is ever narrower
+    setScrollButtonsVisible (false); // resized() always fits the full range exactly -- see below
     setWantsKeyboardFocus (false); // click-to-focus only -- never let QWERTY keys play/select through the base class
 
     populatedSlots = source.getPopulatedSlots();
@@ -23,6 +22,35 @@ PerformanceKeyboardPanel::PerformanceKeyboardPanel (Source& sourceToUse)
 PerformanceKeyboardPanel::~PerformanceKeyboardPanel()
 {
     pollTimer.stopTimer();
+}
+
+void PerformanceKeyboardPanel::resized()
+{
+    // See isFittingWidth's own doc comment -- setKeyWidth() below can
+    // reenter this exact function; while that's happening, only run the
+    // base class's own key-position layout, never repeat the fitting logic.
+    if (isFittingWidth)
+    {
+        juce::MidiKeyboardComponent::resized();
+        return;
+    }
+
+    isFittingWidth = true;
+
+    // Two-pass width fit: lay out at a trial key width, measure the total
+    // keyboard width that produced, then scale so the real width exactly
+    // fills getWidth() -- getTotalKeyboardWidth() depends on keyWidth
+    // already being set, so there's no closed-form way to solve for it
+    // directly for an arbitrary mix of black/white keys in range.
+    constexpr float trialKeyWidth = 20.0f;
+    setKeyWidth (trialKeyWidth);
+    const float totalAtTrial = getTotalKeyboardWidth();
+    if (totalAtTrial > 0.0f && getWidth() > 0)
+        setKeyWidth (trialKeyWidth * (float) getWidth() / totalAtTrial);
+
+    isFittingWidth = false;
+
+    juce::MidiKeyboardComponent::resized(); // final, real layout pass at the now-settled keyWidth
 }
 
 bool PerformanceKeyboardPanel::mouseDownOnKey (int midiNoteNumber, const juce::MouseEvent&)

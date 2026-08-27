@@ -1,5 +1,11 @@
 #include "PlaybackStyleParameterPanel.h"
 
+namespace
+{
+    constexpr float rotaryStartAngle = juce::MathConstants<float>::pi * 1.2f;
+    constexpr float rotaryEndAngle = juce::MathConstants<float>::pi * 2.8f;
+}
+
 PlaybackStyleParameterPanel::PlaybackStyleParameterPanel (SlicerAudioProcessor& processorToUse,
                                                             GetParameterValue getValueIn,
                                                             SetParameterValue setValueIn,
@@ -29,9 +35,9 @@ PlaybackStyleParameterPanel::PlaybackStyleParameterPanel (SlicerAudioProcessor& 
     };
 }
 
-std::vector<PlaybackStyleParameterPanel::PanelRow> PlaybackStyleParameterPanel::buildRowsForStyle (int style)
+std::vector<PlaybackStyleParameterPanel::DialColumn> PlaybackStyleParameterPanel::buildColumnsForStyle (int style)
 {
-    std::vector<PanelRow> rows;
+    std::vector<DialColumn> columns;
     const auto applicable = SlicerAudioProcessor::getApplicableSequencerCellParameters (style);
 
     for (int paramIndex : applicable)
@@ -40,24 +46,15 @@ std::vector<PlaybackStyleParameterPanel::PanelRow> PlaybackStyleParameterPanel::
             continue;
 
         if (SlicerAudioProcessor::isSequencerCellParameterSwept (paramIndex))
-        {
-            // Mode first, then Value -- same order the right-click menu's
-            // own submenu-then-slider flow presents them in.
-            rows.push_back ({ paramIndex + 1, true });
-            rows.push_back ({ paramIndex, false });
-        }
+            columns.push_back ({ paramIndex, paramIndex + 1, false });
         else if (SlicerAudioProcessor::isSequencerCellParameterDiscrete (paramIndex)
             && ! SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (paramIndex))
-        {
-            rows.push_back ({ paramIndex, true });
-        }
+            columns.push_back ({ paramIndex, -1, true });
         else
-        {
-            rows.push_back ({ paramIndex, false });
-        }
+            columns.push_back ({ paramIndex, -1, false });
     }
 
-    return rows;
+    return columns;
 }
 
 void PlaybackStyleParameterPanel::setSelectedStyle (int styleIndex)
@@ -73,24 +70,25 @@ void PlaybackStyleParameterPanel::setSelectedStyle (int styleIndex)
 
 int PlaybackStyleParameterPanel::getPreferredHeight()
 {
-    int maxRows = 0;
-
-    for (int style = 0; style < SlicerAudioProcessor::numPlaybackStyleOptions; ++style)
-        maxRows = juce::jmax (maxRows, (int) buildRowsForStyle (style).size());
-
-    return styleSelectorHeight + rowGap + maxRows * (rowHeight + rowGap);
+    return styleSelectorHeight + topGap + nameLabelHeight + labelGap + dialDiameter + labelGap + indicatorHeight;
 }
 
-int PlaybackStyleParameterPanel::getPreferredHeightForStyle (int styleIndex)
+PlaybackStyleParameterPanel::ColumnLayout PlaybackStyleParameterPanel::getColumnLayout (int columnIndex) const
 {
-    const int rowCount = (int) buildRowsForStyle (styleIndex).size();
-    return styleSelectorHeight + rowGap + rowCount * (rowHeight + rowGap);
-}
+    const int x = leftPadding + columnIndex * (columnWidth + columnGap);
+    const int rowTop = styleSelectorHeight + topGap;
 
-juce::Rectangle<int> PlaybackStyleParameterPanel::getRowBounds (int rowIndex) const
-{
-    const int y = styleSelectorHeight + rowGap + rowIndex * (rowHeight + rowGap);
-    return { 0, y, getWidth(), rowHeight };
+    ColumnLayout layout;
+    layout.nameBounds = { x, rowTop, columnWidth, nameLabelHeight };
+
+    const int dialTop = rowTop + nameLabelHeight + labelGap;
+    layout.dialBounds = juce::Rectangle<int> (x, dialTop, columnWidth, dialDiameter)
+                             .withSizeKeepingCentre (dialDiameter, dialDiameter);
+
+    const int indicatorTop = dialTop + dialDiameter + labelGap;
+    layout.indicatorBounds = { x, indicatorTop, columnWidth, indicatorHeight };
+
+    return layout;
 }
 
 void PlaybackStyleParameterPanel::resized()
@@ -98,76 +96,107 @@ void PlaybackStyleParameterPanel::resized()
     styleSelector.setBounds (getLocalBounds().removeFromTop (styleSelectorHeight).removeFromLeft (200));
 }
 
+void PlaybackStyleParameterPanel::drawDial (juce::Graphics& g, juce::Rectangle<int> dialBounds, float t, bool active) const
+{
+    const auto bounds = dialBounds.toFloat();
+    const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) / 2.0f - 2.0f;
+    const auto centre = bounds.getCentre();
+    const float angle = rotaryStartAngle + t * (rotaryEndAngle - rotaryStartAngle);
+
+    juce::Path backgroundArc;
+    backgroundArc.addCentredArc (centre.x, centre.y, radius, radius, 0.0f, rotaryStartAngle, rotaryEndAngle, true);
+    g.setColour (juce::Colours::white.withAlpha (0.15f));
+    g.strokePath (backgroundArc, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    juce::Path valueArc;
+    valueArc.addCentredArc (centre.x, centre.y, radius, radius, 0.0f, rotaryStartAngle, angle, true);
+    g.setColour (juce::Colours::cyan.withAlpha (active ? 1.0f : 0.85f));
+    g.strokePath (valueArc, juce::PathStrokeType (active ? 4.0f : 3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    const auto knobBounds = bounds.reduced (radius * 0.3f);
+    g.setColour (juce::Colours::black.withAlpha (0.85f));
+    g.fillEllipse (knobBounds);
+    g.setColour (juce::Colours::white.withAlpha (0.4f));
+    g.drawEllipse (knobBounds, 1.0f);
+
+    const float pointerLength = radius * 0.55f;
+    juce::Path pointer;
+    pointer.startNewSubPath (centre.x, centre.y);
+    pointer.lineTo (centre.x + pointerLength * std::sin (angle), centre.y - pointerLength * std::cos (angle));
+    g.setColour (juce::Colours::white);
+    g.strokePath (pointer, juce::PathStrokeType (2.0f));
+}
+
 void PlaybackStyleParameterPanel::paint (juce::Graphics& g)
 {
     const int style = styleSelector.getSelectedId() - 1;
-    const auto rows = buildRowsForStyle (style);
+    const auto columns = buildColumnsForStyle (style);
 
-    if (rows.empty())
+    if (columns.empty())
     {
+        const auto emptyBounds = getColumnLayout (0).nameBounds.withRight (getWidth()).withHeight (dialDiameter);
         g.setColour (juce::Colours::white.withAlpha (0.4f));
         g.setFont (12.0f);
-        g.drawFittedText ("No adjustable parameters for this style",
-                           getRowBounds (0), juce::Justification::centredLeft, 1);
+        g.drawFittedText ("No adjustable parameters for this style", emptyBounds, juce::Justification::centredLeft, 1);
         return;
     }
 
-    for (int i = 0; i < (int) rows.size(); ++i)
+    for (int i = 0; i < (int) columns.size(); ++i)
     {
-        const auto& row = rows[(size_t) i];
-        const auto bounds = getRowBounds (i);
-        const juce::String name = SlicerAudioProcessor::getSequencerCellParameterName (row.paramIndex);
+        const auto& column = columns[(size_t) i];
+        const auto layout = getColumnLayout (i);
+        const juce::String name = SlicerAudioProcessor::getSequencerCellParameterName (column.paramIndex);
 
-        if (row.discrete)
+        g.setColour (juce::Colours::white.withAlpha (0.7f));
+        g.setFont (10.0f);
+        g.drawFittedText (name, layout.nameBounds, juce::Justification::centred, 2, 0.75f);
+
+        float t = 0.0f;
+        juce::String indicatorText;
+
+        if (column.discreteSelect)
         {
-            const int currentOption = juce::roundToInt (getValue (row.paramIndex));
-            const juce::String optionName = SlicerAudioProcessor::getSequencerCellParameterOptionName (row.paramIndex, currentOption);
-
-            g.setColour (juce::Colours::black.withAlpha (0.7f));
-            g.fillRect (bounds);
-            g.setColour (juce::Colours::white.withAlpha (0.6f));
-            g.drawRect (bounds, 1);
-
-            g.setColour (juce::Colours::white);
-            g.setFont (11.0f);
-            g.drawFittedText (name + ": " + optionName, bounds.reduced (6, 0), juce::Justification::centredLeft, 1);
-
-            g.setColour (juce::Colours::white.withAlpha (0.5f));
-            g.setFont (10.0f);
-            g.drawFittedText ("change...", bounds.reduced (6, 0), juce::Justification::centredRight, 1);
+            const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (column.paramIndex);
+            const int currentOption = juce::roundToInt (getValue (column.paramIndex));
+            t = numOptions > 1 ? (float) currentOption / (float) (numOptions - 1) : 0.0f;
+            indicatorText = SlicerAudioProcessor::getSequencerCellParameterOptionName (column.paramIndex, currentOption);
         }
         else
         {
-            const float currentValue = getValue (row.paramIndex);
-            const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (row.paramIndex);
-            const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (row.paramIndex);
+            const float value = getValue (column.paramIndex);
+            const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (column.paramIndex);
+            const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (column.paramIndex);
             const float range = maxValue - minValue;
-            const float t = range > 0.0f ? juce::jlimit (0.0f, 1.0f, (currentValue - minValue) / range) : 0.0f;
+            t = range > 0.0f ? juce::jlimit (0.0f, 1.0f, (value - minValue) / range) : 0.0f;
 
-            g.setColour (juce::Colours::black.withAlpha (0.9f));
-            g.fillRect (bounds);
-
-            const auto fillBounds = bounds.withWidth ((int) ((float) bounds.getWidth() * t)).reduced (2);
-            g.setColour (juce::Colours::cyan);
-            g.fillRect (fillBounds);
-
-            g.setColour (juce::Colours::white);
-            g.drawRect (bounds, 1);
-            g.setFont (11.0f);
-            g.drawFittedText (name + ": " + juce::String (currentValue, 2), bounds.reduced (2), juce::Justification::centred, 1);
+            if (column.modeParamIndex >= 0)
+            {
+                const int modeOption = juce::roundToInt (getValue (column.modeParamIndex));
+                indicatorText = SlicerAudioProcessor::getSequencerCellParameterOptionName (column.modeParamIndex, modeOption);
+            }
+            else
+            {
+                indicatorText = juce::String (value, 2);
+            }
         }
+
+        drawDial (g, layout.dialBounds, t, draggingParamIndex == column.paramIndex);
+
+        g.setColour (juce::Colours::white.withAlpha (0.6f));
+        g.setFont (9.5f);
+        g.drawFittedText (indicatorText, layout.indicatorBounds, juce::Justification::centred, 1, 0.7f);
     }
 }
 
-void PlaybackStyleParameterPanel::showDiscreteOptionsMenu (const PanelRow& row, juce::Rectangle<int> rowBounds)
+void PlaybackStyleParameterPanel::showOptionsMenu (int paramIndex, juce::Rectangle<int> targetBounds)
 {
-    const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (row.paramIndex);
-    const int currentOption = juce::roundToInt (getValue (row.paramIndex));
+    const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (paramIndex);
+    const int currentOption = juce::roundToInt (getValue (paramIndex));
 
     juce::PopupMenu menu;
 
     for (int option = 0; option < numOptions; ++option)
-        menu.addItem (option + 1, SlicerAudioProcessor::getSequencerCellParameterOptionName (row.paramIndex, option),
+        menu.addItem (option + 1, SlicerAudioProcessor::getSequencerCellParameterOptionName (paramIndex, option),
                       true, option == currentOption);
 
     // Parented to the top-level component, not this (potentially narrow)
@@ -176,9 +205,7 @@ void PlaybackStyleParameterPanel::showDiscreteOptionsMenu (const PanelRow& row, 
     // multiple columns by a parent too short to fit it as one list.
     const auto menuOptions = juce::PopupMenu::Options()
         .withParentComponent (getTopLevelComponent())
-        .withTargetScreenArea (localAreaToGlobal (rowBounds));
-
-    const int paramIndex = row.paramIndex;
+        .withTargetScreenArea (localAreaToGlobal (targetBounds));
 
     menu.showMenuAsync (menuOptions, [this, paramIndex] (int result)
     {
@@ -190,41 +217,34 @@ void PlaybackStyleParameterPanel::showDiscreteOptionsMenu (const PanelRow& row, 
     });
 }
 
-void PlaybackStyleParameterPanel::updateContinuousValueFromMouseX (int paramIndex, int mouseX, const juce::Rectangle<int>& rowBounds)
-{
-    const float t = rowBounds.getWidth() > 0
-        ? juce::jlimit (0.0f, 1.0f, (float) (mouseX - rowBounds.getX()) / (float) rowBounds.getWidth())
-        : 0.0f;
-
-    const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
-    const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
-    setValue (paramIndex, minValue + t * (maxValue - minValue));
-}
-
 void PlaybackStyleParameterPanel::mouseDown (const juce::MouseEvent& event)
 {
     const int style = styleSelector.getSelectedId() - 1;
-    const auto rows = buildRowsForStyle (style);
+    const auto columns = buildColumnsForStyle (style);
 
-    for (int i = 0; i < (int) rows.size(); ++i)
+    for (int i = 0; i < (int) columns.size(); ++i)
     {
-        const auto bounds = getRowBounds (i);
+        const auto layout = getColumnLayout (i);
+        const auto columnBounds = layout.nameBounds.getUnion (layout.dialBounds).getUnion (layout.indicatorBounds);
 
-        if (! bounds.contains (event.x, event.y))
+        if (! columnBounds.contains (event.x, event.y))
             continue;
 
-        const auto& row = rows[(size_t) i];
+        const auto& column = columns[(size_t) i];
 
-        if (row.discrete)
+        if (column.discreteSelect)
         {
-            showDiscreteOptionsMenu (row, bounds);
+            showOptionsMenu (column.paramIndex, columnBounds);
+        }
+        else if (column.modeParamIndex >= 0 && layout.indicatorBounds.contains (event.x, event.y))
+        {
+            showOptionsMenu (column.modeParamIndex, layout.indicatorBounds);
         }
         else
         {
-            draggingParamIndex = row.paramIndex;
-            draggingRowBounds = bounds;
-            updateContinuousValueFromMouseX (row.paramIndex, event.x, bounds);
-            repaint();
+            draggingParamIndex = column.paramIndex;
+            draggingStartY = event.y;
+            draggingStartValue = getValue (column.paramIndex);
         }
 
         return;
@@ -236,11 +256,19 @@ void PlaybackStyleParameterPanel::mouseDrag (const juce::MouseEvent& event)
     if (draggingParamIndex < 0)
         return;
 
-    updateContinuousValueFromMouseX (draggingParamIndex, event.x, draggingRowBounds);
+    constexpr float pixelsForFullRange = 150.0f;
+
+    const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (draggingParamIndex);
+    const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (draggingParamIndex);
+    const float deltaFraction = (float) (draggingStartY - event.y) / pixelsForFullRange;
+    const float newValue = juce::jlimit (minValue, maxValue, draggingStartValue + deltaFraction * (maxValue - minValue));
+
+    setValue (draggingParamIndex, newValue);
     repaint();
 }
 
 void PlaybackStyleParameterPanel::mouseUp (const juce::MouseEvent&)
 {
     draggingParamIndex = -1;
+    repaint();
 }

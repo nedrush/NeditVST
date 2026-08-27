@@ -27,10 +27,10 @@
             file="../Source/GranularStretcher.cpp"/>
       <FILE id="j2Fp8N" name="GranularStretcher.h" compile="0" resource="0"
             file="../Source/GranularStretcher.h"/>
-      <FILE id="q4Wb7K" name="PlaybackStyleGrid.cpp" compile="1" resource="0"
-            file="../Source/PlaybackStyleGrid.cpp"/>
-      <FILE id="s6Hn2Y" name="PlaybackStyleGrid.h" compile="0" resource="0"
-            file="../Source/PlaybackStyleGrid.h"/>
+      <FILE id="q4Wb7L" name="PlaybackStyleFaderRow.cpp" compile="1" resource="0"
+            file="../Source/PlaybackStyleFaderRow.cpp"/>
+      <FILE id="s6Hn2Z" name="PlaybackStyleFaderRow.h" compile="0" resource="0"
+            file="../Source/PlaybackStyleFaderRow.h"/>
       <FILE id="w8Tc4R" name="SequencerGrid.cpp" compile="1" resource="0"
             file="../Source/SequencerGrid.cpp"/>
       <FILE id="y1Nb9F" name="SequencerGrid.h" compile="0" resource="0"
@@ -39,6 +39,10 @@
             file="../Source/PlaybackStylePalette.cpp"/>
       <FILE id="t2x7mr" name="PlaybackStylePalette.h" compile="0" resource="0"
             file="../Source/PlaybackStylePalette.h"/>
+      <FILE id="t2x7ms" name="PlaybackStyleSwatchRow.cpp" compile="1" resource="0"
+            file="../Source/PlaybackStyleSwatchRow.cpp"/>
+      <FILE id="t2x7mt" name="PlaybackStyleSwatchRow.h" compile="0" resource="0"
+            file="../Source/PlaybackStyleSwatchRow.h"/>
       <FILE id="e5Vn8Q" name="EasingCurve.h" compile="0" resource="0"
             file="../Source/EasingCurve.h"/>
       <FILE id="f3Kp9L" name="PlaybackStyleParameterPanel.cpp" compile="1" resource="0"
@@ -53,6 +57,10 @@
             file="../Source/PerformanceKeyboardPanel.cpp"/>
       <FILE id="p2Xr6D" name="PerformanceKeyboardPanel.h" compile="0" resource="0"
             file="../Source/PerformanceKeyboardPanel.h"/>
+      <FILE id="p2Xr6E" name="ControlKeyboardPanel.cpp" compile="1" resource="0"
+            file="../Source/ControlKeyboardPanel.cpp"/>
+      <FILE id="p2Xr6F" name="ControlKeyboardPanel.h" compile="0" resource="0"
+            file="../Source/ControlKeyboardPanel.h"/>
       <FILE id="q7Zm4T" name="NeditPalette.h" compile="0" resource="0"
             file="../Source/NeditPalette.h"/>
       <FILE id="r8An5U" name="SegmentedButtonRow.cpp" compile="1" resource="0"
@@ -63,6 +71,14 @@
             file="../Source/SectionPanel.cpp"/>
       <FILE id="w4Fs1Z" name="SectionPanel.h" compile="0" resource="0"
             file="../Source/SectionPanel.h"/>
+      <FILE id="w4Fs1A" name="PanelBackdrop.h" compile="0" resource="0"
+            file="../Source/PanelBackdrop.h"/>
+      <FILE id="w4Fs1B" name="AdjustmentsIconButton.h" compile="0" resource="0"
+            file="../Source/AdjustmentsIconButton.h"/>
+      <FILE id="w4Fs1C" name="DragNumberField.cpp" compile="1" resource="0"
+            file="../Source/DragNumberField.cpp"/>
+      <FILE id="w4Fs1D" name="DragNumberField.h" compile="0" resource="0"
+            file="../Source/DragNumberField.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

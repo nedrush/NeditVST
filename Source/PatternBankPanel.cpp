@@ -1,15 +1,118 @@
 #include "PatternBankPanel.h"
 
+//==============================================================================
+PatternBankPanel::BankKeyboard::BankKeyboard (PatternBankPanel& ownerToUse)
+    : juce::MidiKeyboardState(),
+      juce::MidiKeyboardComponent (*this, juce::MidiKeyboardComponent::horizontalKeyboard),
+      owner (ownerToUse)
+{
+    setAvailableRange (0, 127);
+    setScrollButtonsVisible (false); // resized() always fits the full range exactly -- see below
+    setWantsKeyboardFocus (false); // display/hover only -- never let QWERTY keys play through the base class
+}
+
+void PatternBankPanel::BankKeyboard::resized()
+{
+    // See isFittingWidth's own doc comment -- setKeyWidth() below can
+    // reenter this exact function; while that's happening, only run the
+    // base class's own key-position layout, never repeat the fitting logic.
+    if (isFittingWidth)
+    {
+        juce::MidiKeyboardComponent::resized();
+        return;
+    }
+
+    isFittingWidth = true;
+
+    // Two-pass width fit: lay out at a trial key width, measure the total
+    // keyboard width that produced, then scale so the real width exactly
+    // fills getWidth() -- getTotalKeyboardWidth() depends on keyWidth
+    // already being set, so there's no closed-form way to solve for it
+    // directly for an arbitrary mix of black/white keys in range.
+    constexpr float trialKeyWidth = 20.0f;
+    setKeyWidth (trialKeyWidth);
+    const float totalAtTrial = getTotalKeyboardWidth();
+    if (totalAtTrial > 0.0f && getWidth() > 0)
+        setKeyWidth (trialKeyWidth * (float) getWidth() / totalAtTrial);
+
+    isFittingWidth = false;
+
+    juce::MidiKeyboardComponent::resized(); // final, real layout pass at the now-settled keyWidth
+}
+
+void PatternBankPanel::BankKeyboard::paintSlotOverlay (int midiNoteNumber, juce::Graphics& g, juce::Rectangle<float> area)
+{
+    if (midiNoteNumber < 0 || midiNoteNumber >= 128)
+        return;
+
+    if (owner.populatedSlots[(size_t) midiNoteNumber])
+    {
+        g.setColour (juce::Colours::mediumseagreen.withAlpha (0.55f));
+        g.fillRect (area);
+    }
+
+    if (midiNoteNumber == owner.activeSlot)
+    {
+        g.setColour (juce::Colours::white);
+        g.drawRect (area, 2.0f);
+    }
+
+    // Pending switch (Pattern Switch Timing: Set Interval/End of Pattern) --
+    // a dashed amber ring, deliberately a different colour AND stroke style
+    // from the active key's solid white border, so a pattern that's merely
+    // headed-toward is never mistaken for one that's already sounding.
+    if (midiNoteNumber == owner.pendingSlot)
+    {
+        const auto pendingBounds = area.expanded (1.0f);
+        juce::Path dashedRing;
+        dashedRing.addRectangle (pendingBounds);
+
+        float dashLengths[] = { 3.0f, 2.0f };
+        juce::Path dashedPath;
+        juce::PathStrokeType (1.5f).createDashedStroke (dashedPath, dashedRing, dashLengths, 2);
+
+        g.setColour (juce::Colours::orange);
+        g.fillPath (dashedPath);
+    }
+}
+
+void PatternBankPanel::BankKeyboard::drawWhiteNote (int midiNoteNumber, juce::Graphics& g, juce::Rectangle<float> area,
+                                                     bool isDown, bool isOver, juce::Colour lineColour, juce::Colour textColour)
+{
+    juce::MidiKeyboardComponent::drawWhiteNote (midiNoteNumber, g, area, isDown, isOver, lineColour, textColour);
+    paintSlotOverlay (midiNoteNumber, g, area);
+}
+
+void PatternBankPanel::BankKeyboard::drawBlackNote (int midiNoteNumber, juce::Graphics& g, juce::Rectangle<float> area,
+                                                     bool isDown, bool isOver, juce::Colour noteFillColour)
+{
+    juce::MidiKeyboardComponent::drawBlackNote (midiNoteNumber, g, area, isDown, isOver, noteFillColour);
+    paintSlotOverlay (midiNoteNumber, g, area);
+}
+
+void PatternBankPanel::BankKeyboard::mouseMove (const juce::MouseEvent& event)
+{
+    owner.updateStatusLabelForHoveredNote (getNoteAndVelocityAtPosition (event.position).note);
+}
+
+void PatternBankPanel::BankKeyboard::mouseExit (const juce::MouseEvent&)
+{
+    owner.updateStatusLabelForHoveredNote (-1);
+}
+
+//==============================================================================
 PatternBankPanel::PatternBankPanel (BankSource& sourceToUse)
     : source (sourceToUse)
 {
     addAndMakeVisible (saveButton);
     saveButton.onClick = [this] { saveButtonClicked(); };
 
-    statusLabel.setJustificationType (juce::Justification::centred);
+    statusLabel.setJustificationType (juce::Justification::centredLeft);
     statusLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     statusLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
     addAndMakeVisible (statusLabel);
+
+    addAndMakeVisible (keyboard);
 
     populatedSlots = source.getPopulatedSlots();
     activeSlot = source.getActiveSlot();
@@ -18,7 +121,7 @@ PatternBankPanel::PatternBankPanel (BankSource& sourceToUse)
     updateSaveButtonText();
     updateStatusLabelForHoveredNote (-1);
 
-    setSize (preferredWidth, getPreferredHeight());
+    setSize (600, getPreferredHeight()); // real width comes from the editor's own layout (setBounds())
     startTimerHz (15); // slot state can change on its own (a note-on arriving), nothing else to trigger a repaint
 }
 
@@ -27,43 +130,17 @@ PatternBankPanel::~PatternBankPanel()
     stopTimer();
 }
 
-int PatternBankPanel::getPreferredHeight()
-{
-    return gridTop + rows * cellSize + (rows - 1) * cellGap + statusLabelHeight;
-}
-
 void PatternBankPanel::resized()
 {
-    saveButton.setBounds (0, 0, getWidth(), 22);
-    statusLabel.setBounds (0, getHeight() - statusLabelHeight, getWidth(), statusLabelHeight);
-}
+    auto area = getLocalBounds();
 
-juce::Rectangle<int> PatternBankPanel::getCellBounds (int noteNumber) const
-{
-    const int row = noteNumber / columns;
-    const int col = noteNumber % columns;
-    const int x = col * (cellSize + cellGap);
-    const int y = gridTop + row * (cellSize + cellGap);
-    return { x, y, cellSize, cellSize };
-}
+    auto topRow = area.removeFromTop (saveRowHeight);
+    saveButton.setBounds (topRow.removeFromLeft (saveButton.getBestWidthForHeight (saveRowHeight) + 20));
+    topRow.removeFromLeft (10);
+    statusLabel.setBounds (topRow);
 
-int PatternBankPanel::getNoteAtPosition (juce::Point<int> position) const
-{
-    if (position.y < gridTop)
-        return -1;
-
-    const int col = position.x / (cellSize + cellGap);
-    const int row = (position.y - gridTop) / (cellSize + cellGap);
-
-    if (col < 0 || col >= columns || row < 0 || row >= rows)
-        return -1;
-
-    const int note = row * columns + col;
-
-    if (note >= 128 || ! getCellBounds (note).contains (position))
-        return -1;
-
-    return note;
+    area.removeFromTop (rowGap);
+    keyboard.setBounds (area);
 }
 
 void PatternBankPanel::updateSaveButtonText()
@@ -106,16 +183,6 @@ void PatternBankPanel::updateStatusLabelForHoveredNote (int noteNumber)
     statusLabel.setText (text, juce::dontSendNotification);
 }
 
-void PatternBankPanel::mouseMove (const juce::MouseEvent& event)
-{
-    updateStatusLabelForHoveredNote (getNoteAtPosition (event.getPosition()));
-}
-
-void PatternBankPanel::mouseExit (const juce::MouseEvent&)
-{
-    updateStatusLabelForHoveredNote (-1);
-}
-
 void PatternBankPanel::saveButtonClicked()
 {
     if (learnArmed)
@@ -126,7 +193,7 @@ void PatternBankPanel::saveButtonClicked()
     learnArmed = source.isLearnArmed();
     updateSaveButtonText();
     updateStatusLabelForHoveredNote (-1);
-    repaint();
+    keyboard.repaint();
 }
 
 void PatternBankPanel::timerCallback()
@@ -147,52 +214,6 @@ void PatternBankPanel::timerCallback()
     pendingSlot = newPendingSlot;
     learnArmed = newLearnArmed;
     updateSaveButtonText();
-    updateStatusLabelForHoveredNote (getNoteAtPosition (getMouseXYRelative()));
-    repaint();
-}
-
-void PatternBankPanel::paint (juce::Graphics& g)
-{
-    if (learnArmed)
-    {
-        const juce::Rectangle<int> gridBounds (0, gridTop, columns * cellSize + (columns - 1) * cellGap,
-                                                 rows * cellSize + (rows - 1) * cellGap);
-        g.setColour (juce::Colours::orange);
-        g.drawRect (gridBounds.expanded (2), 2);
-    }
-
-    for (int note = 0; note < 128; ++note)
-    {
-        const auto bounds = getCellBounds (note);
-        const bool populated = populatedSlots[(size_t) note];
-        const bool active = (note == activeSlot);
-        const bool pending = (note == pendingSlot);
-
-        g.setColour (populated ? juce::Colours::mediumseagreen : juce::Colours::black.withAlpha (0.25f));
-        g.fillRect (bounds);
-
-        g.setColour (active ? juce::Colours::white : juce::Colours::black.withAlpha (0.5f));
-        g.drawRect (bounds, active ? 2 : 1);
-
-        // Pending switch (Pattern Switch Timing: Set Interval/End of
-        // Pattern) -- a dashed amber ring, deliberately a different colour
-        // AND stroke style from the active cell's solid white border, so a
-        // pattern that's merely headed-toward is never mistaken for one
-        // that's already sounding. Drawn outside the cell's own border
-        // (expanded) so it never visually merges with it, including when a
-        // slot is simultaneously pending AND the current active slot.
-        if (pending)
-        {
-            const auto pendingBounds = bounds.expanded (2).toFloat();
-            juce::Path dashedRing;
-            dashedRing.addRectangle (pendingBounds);
-
-            float dashLengths[] = { 3.0f, 2.0f };
-            juce::Path dashedPath;
-            juce::PathStrokeType (1.5f).createDashedStroke (dashedPath, dashedRing, dashLengths, 2);
-
-            g.setColour (juce::Colours::orange);
-            g.fillPath (dashedPath);
-        }
-    }
+    updateStatusLabelForHoveredNote (keyboard.getNoteAndVelocityAtPosition (keyboard.getMouseXYRelative().toFloat()).note);
+    keyboard.repaint();
 }

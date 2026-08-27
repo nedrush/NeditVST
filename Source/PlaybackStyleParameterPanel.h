@@ -4,26 +4,34 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-/** Slice Length/Clock mode global-default parameter panel. A style selector
+/** Slice Length/Clock mode global-default parameter panel -- a style selector
     (juce::ComboBox, same "Forward"/"Ping-Pong"/... order as
-    PlaybackStylePalette/PlaybackStyleGrid) sits above a stack of rows showing
-    whichever parameters SlicerAudioProcessor::getApplicableSequencerCellParameters()
-    says the selected style actually uses (Subdivide excluded -- see its own
-    doc comment below).
+    PlaybackStylePalette/PlaybackStyleGrid) sits above a single fixed-height
+    row of compact rotary dials, one per parameter
+    SlicerAudioProcessor::getApplicableSequencerCellParameters() says the
+    selected style actually uses (Subdivide/Volume excluded -- see
+    buildColumnsForStyle()'s own doc comment).
 
-    Every row reuses the exact same visual/interaction language as
-    SequencerGrid's right-click parameter editing (see its own class doc
-    comment): continuous parameters get a hand-painted drag bar (black
-    background, cyan fill proportional to value, white border, centred
-    "Name: value" text -- SequencerGrid::paint()'s slider-overlay code,
-    stretched to a persistent full-width row instead of a floating 120px
-    overlay); discrete parameters (including each swept parameter's own
-    Static/Sweep In/Sweep Out Mode) get a same-styled row that opens a
-    juce::PopupMenu of named options on click, the exact same
-    "addItem per option name" loop SequencerGrid::showParameterMenuForCell()
-    already uses for its discrete submenus, parented to getTopLevelComponent()
-    for the same reason (Rate's 20-item list would otherwise get squashed
-    into columns by a narrow parent).
+    Each dial shows the parameter's name above it and, beneath it, either its
+    current Sweep Mode ("Static"/"Sweep In"/"Sweep Out", for a swept
+    parameter -- Sample Rate Reduction/Bit Depth/Delay Time/Mix/Feedback),
+    its current option name (a plain discrete parameter like Filter Type or
+    Curve Shape), or its formatted numeric value (a plain continuous
+    parameter like Resonance). Dragging a dial vertically adjusts its value;
+    clicking a plain-discrete dial, or the Mode text beneath a swept one,
+    opens the same juce::PopupMenu-of-named-options
+    SequencerGrid::showParameterMenuForCell() uses for its own discrete
+    submenus, parented to getTopLevelComponent() for the same reason (Rate's
+    20-item list would otherwise get squashed into columns by a narrow
+    parent).
+
+    Because every style's dials sit in ONE row rather than a stack, the
+    panel's height never depends on which style is selected or how many
+    dials it has -- see getPreferredHeight()'s own doc comment. A style with
+    fewer parameters (Tape Stop's single Curve Shape) just leaves the row's
+    right side empty rather than shrinking the panel, matching this app's
+    general "fixed-height container sized to the worst case" layout
+    principle for every variable-content area.
 
     Unlike SequencerGrid, this panel reads/writes the GLOBAL default value for
     each parameter (SlicerAudioProcessor::getSequencerCellParameterGlobalValue()/
@@ -49,18 +57,7 @@
     stay fully independent). initialStyleId/onStyleChanged make the style
     selector's own selection persist as real state too, when a caller needs
     that (Performance mode does; Slice Length/Clock's own instance, passing
-    neither, keeps today's "purely local UI state" behaviour unchanged).
-
-    Subdivide (index 5) applies to every style in SequencerGrid's own menu
-    but is excluded here -- it's a per-step retrigger rate tied to the step
-    sequencer's own step timing, with no meaning in Slice Length/Clock modes.
-    Volume (index 19) is excluded for the same reason: it's a per-step gain
-    ramp keyed to the Sequencer's own Whole Window step timing (see
-    PluginProcessor.h's own doc comment on isSequencerCellParameterSwept()),
-    has no global dial (getSequencerCellParameterGlobalValue() hardcodes its
-    fallback the same way it does for Subdivide), and isn't meaningful outside
-    Sequenced mode -- a possible later addition once the Sequencer version is
-    proven, not required now. */
+    neither, keeps today's "purely local UI state" behaviour unchanged). */
 class PlaybackStyleParameterPanel : public juce::Component
 {
 public:
@@ -87,21 +84,12 @@ public:
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
 
-    // Fixed height sized for the worst-case style (most rows) -- see class
-    // doc comment. Some callers (Performance mode's own inline panel, which
-    // already lives inside an always-scrolling region) reserve exactly this
-    // much space regardless of which style is currently selected, so
-    // choosing a different style never reflows anything laid out below this
-    // panel there.
+    // Fixed height for the style selector row plus exactly one row of
+    // dials -- unlike the old stacked-rows layout, this no longer varies
+    // per style (every style's dials fit in the same single row, however
+    // many or few there are), so every caller can reserve this once and
+    // never reflow when the selected style changes.
     static int getPreferredHeight();
-
-    // Preferred height for exactly styleIndex's own row count -- unlike
-    // getPreferredHeight() (worst-case across every style), this lets a
-    // caller that DOES want to reflow when the selection changes (the
-    // editor's global Playback Style section, via its own
-    // updateWindowSize()) size a reserved layout slot to just the currently
-    // selected style instead of always paying the worst-case cost.
-    static int getPreferredHeightForStyle (int styleIndex);
 
     // Hides (or reshows) the panel's own internal style-picker ComboBox
     // (Pass 1) -- for a caller that drives style selection with its own
@@ -123,28 +111,41 @@ public:
     void setSelectedStyle (int styleIndex);
 
 private:
-    // One visible row: either a discrete option picker (Filter Type, Curve
-    // Shape, a swept parameter's own Mode, Forward/Backward Curve, Rate) or
-    // a continuous drag-bar (Resonance, Grain Size, Grain Speed, or a swept
-    // parameter's own Value). paramIndex matches
-    // SlicerAudioProcessor::getSequencerCellParameterName()'s own indexing.
-    struct PanelRow
+    // One dial column: paramIndex is always the VALUE index (continuous, or
+    // the option index for a plain discrete parameter); modeParamIndex is
+    // paramIndex+1 for a swept parameter (its own Static/Sweep In/Sweep Out
+    // Mode) and -1 otherwise; discreteSelect marks a plain discrete
+    // parameter (Filter Type, Curve Shape, Rate, Forward/Backward Curve)
+    // whose dial is click-to-open-a-menu rather than drag-to-adjust.
+    struct DialColumn
     {
         int paramIndex;
-        bool discrete;
+        int modeParamIndex;
+        bool discreteSelect;
     };
 
-    // Builds the row list for one style: getApplicableSequencerCellParameters()
-    // minus Subdivide (index 5) and Volume (index 19); a swept parameter
-    // (Sample Rate Reduction/Bit Depth/Delay Time/Mix/Feedback) expands to
-    // its own Mode row (discrete, paramIndex+1) followed by its Value row
-    // (continuous, paramIndex) -- Mode first, matching the right-click
-    // menu's own "pick mode, then configure amount" order.
-    static std::vector<PanelRow> buildRowsForStyle (int style);
+    // The three sub-rectangles one dial column paints/hit-tests against:
+    // the parameter name above the dial, the dial itself, and the mode/
+    // option/value text below it.
+    struct ColumnLayout
+    {
+        juce::Rectangle<int> nameBounds, dialBounds, indicatorBounds;
+    };
 
-    juce::Rectangle<int> getRowBounds (int rowIndex) const;
-    void showDiscreteOptionsMenu (const PanelRow& row, juce::Rectangle<int> rowBounds);
-    void updateContinuousValueFromMouseX (int paramIndex, int mouseX, const juce::Rectangle<int>& rowBounds);
+    // Builds the column list for one style: getApplicableSequencerCellParameters()
+    // minus Subdivide (index 5) and Volume (index 19) -- both general
+    // rather than style-specific, and neither has a global default dial
+    // (getSequencerCellParameterGlobalValue() hardcodes their fallback);
+    // Subdivide is a per-step retrigger rate tied to the step sequencer's
+    // own step timing, Volume a per-step gain ramp keyed to the Sequencer's
+    // Whole Window step timing (see PluginProcessor.h's own doc comment on
+    // isSequencerCellParameterSwept()) -- neither is meaningful in Slice
+    // Length/Clock modes.
+    static std::vector<DialColumn> buildColumnsForStyle (int style);
+
+    ColumnLayout getColumnLayout (int columnIndex) const;
+    void showOptionsMenu (int paramIndex, juce::Rectangle<int> targetBounds);
+    void drawDial (juce::Graphics& g, juce::Rectangle<int> dialBounds, float t, bool active) const;
 
     SlicerAudioProcessor& processor;
     juce::ComboBox styleSelector;
@@ -153,14 +154,23 @@ private:
     std::function<void (int)> onStyleChanged;
 
     static constexpr int styleSelectorHeight = 24;
-    static constexpr int rowGap = 6;
-    static constexpr int rowHeight = 24;
+    static constexpr int topGap = 10;
+    static constexpr int nameLabelHeight = 14;
+    static constexpr int labelGap = 3;
+    static constexpr int dialDiameter = 46;
+    static constexpr int indicatorHeight = 14;
+    static constexpr int columnWidth = 92;
+    static constexpr int columnGap = 10;
+    static constexpr int leftPadding = 4;
 
-    // Continuous-row drag state -- -1 when no row is being dragged, same
-    // "click starts it, drag continues it, release ends it" shape
-    // SequencerGrid's own slider overlay uses.
+    // Vertical-drag rotary state -- -1 when no dial is being dragged.
+    // Dragging is relative to the Y position/value at mouseDown (not the
+    // dial's own bounds), the standard "drag up increases, drag down
+    // decreases, sensitivity independent of where in the dial you grabbed"
+    // rotary-knob convention.
     int draggingParamIndex = -1;
-    juce::Rectangle<int> draggingRowBounds;
+    int draggingStartY = 0;
+    float draggingStartValue = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PlaybackStyleParameterPanel)
 };

@@ -76,6 +76,8 @@ public:
     explicit PerformanceKeyboardPanel (Source& sourceToUse);
     ~PerformanceKeyboardPanel() override;
 
+    void resized() override;
+
     void drawWhiteNote (int midiNoteNumber, juce::Graphics&, juce::Rectangle<float> area,
                          bool isDown, bool isOver, juce::Colour lineColour, juce::Colour textColour) override;
     void drawBlackNote (int midiNoteNumber, juce::Graphics&, juce::Rectangle<float> area,
@@ -105,6 +107,13 @@ private:
     PollTimer pollTimer { *this };
     std::array<bool, 128> populatedSlots {};
     int focusedSlot = -1;
+
+    // Reentrancy guard for resized() -- see ControlKeyboardPanel's own
+    // isLayingOutRange for why setKeyWidth()'s trial-then-rescale fit needs
+    // this: KeyboardComponentBase::setKeyWidth() calls resized() again
+    // (virtually, landing right back here) whenever the width it's given
+    // actually changes.
+    bool isFittingWidth = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PerformanceKeyboardPanel)
 };

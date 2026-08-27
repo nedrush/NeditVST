@@ -50,7 +50,7 @@ juce_add_plugin(NeditVST
     DESCRIPTION "NeditVST"
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Tpmh
-    FORMATS VST3
+    FORMATS VST3 Standalone
     VST3_CATEGORIES "Instrument" "Synth"
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
@@ -74,24 +74,32 @@ target_sources(NeditVST
         Source/SubdivisionProbabilityGrid.h
         Source/GranularStretcher.cpp
         Source/GranularStretcher.h
-        Source/PlaybackStyleGrid.cpp
-        Source/PlaybackStyleGrid.h
+        Source/PlaybackStyleFaderRow.cpp
+        Source/PlaybackStyleFaderRow.h
         Source/SequencerGrid.cpp
         Source/SequencerGrid.h
         Source/PlaybackStylePalette.cpp
         Source/PlaybackStylePalette.h
+        Source/PlaybackStyleSwatchRow.cpp
+        Source/PlaybackStyleSwatchRow.h
         Source/PlaybackStyleParameterPanel.cpp
         Source/PlaybackStyleParameterPanel.h
         Source/PatternBankPanel.cpp
         Source/PatternBankPanel.h
         Source/PerformanceKeyboardPanel.cpp
         Source/PerformanceKeyboardPanel.h
+        Source/ControlKeyboardPanel.cpp
+        Source/ControlKeyboardPanel.h
         Source/EasingCurve.h
         Source/NeditPalette.h
         Source/SegmentedButtonRow.cpp
         Source/SegmentedButtonRow.h
         Source/SectionPanel.cpp
         Source/SectionPanel.h
+        Source/PanelBackdrop.h
+        Source/AdjustmentsIconButton.h
+        Source/DragNumberField.cpp
+        Source/DragNumberField.h
 )
 
 juce_generate_juce_header(NeditVST)

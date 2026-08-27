@@ -766,7 +766,7 @@ public:
     // Out mode) for every parameter getApplicableSequencerCellParameters()
     // lists for that style, MINUS Subdivide (5) and Volume (19) -- both are
     // general/style-independent, not "this style's own" parameters, same
-    // exclusion PlaybackStyleParameterPanel's buildRowsForStyle() already
+    // exclusion PlaybackStyleParameterPanel's buildColumnsForStyle() already
     // applies. Styles with nothing left after that exclusion (Forward, the
     // only one currently) are unaffected regardless of this flag, since
     // there's nothing to randomize. Purely a UI toggle -- manually-drawn
