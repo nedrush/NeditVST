@@ -31,11 +31,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
-# Plugin identity below is copied exactly from NeditVST/NeditVST.jucer (and
-# its Projucer-resolved defaults in NeditVST/JuceLibraryCode/JucePluginDefines.h)
+# Plugin identity below matches NeditVST/NeditVST.jucer (and its
+# Projucer-resolved defaults in NeditVST/JuceLibraryCode/JucePluginDefines.h)
 # so the CMake-built VST3 has an identical identity to the existing
 # Xcode-built one — same manufacturer/plugin codes, same bundle ID, same
-# characteristics. None of these are new values.
+# characteristics.
+#
+# delay-reverb-experiment branch rebrand: PRODUCT_NAME/BUNDLE_ID/PLUGIN_CODE
+# below are deliberately DIFFERENT from main's ("NeditVST" / Tpmh) and from
+# the earlier collaborator-fork test build ("NeditVST-Collab" / Tpco), so
+# this experimental branch's VST3 installs side-by-side with both instead of
+# colliding with either. COMPANY_NAME/PLUGIN_MANUFACTURER_CODE stay
+# unchanged -- same convention the collaborator-fork rebrand used.
 #
 # NEEDS_MIDI_INPUT TRUE matches the .jucer's pluginCharacteristicsValue
 # ("pluginIsSynth,pluginWantsMidiIn") and PluginProcessor::acceptsMidi(),
@@ -45,11 +52,11 @@ FetchContent_MakeAvailable(JUCE)
 juce_add_plugin(NeditVST
     COMPANY_NAME "yourcompany"
     COMPANY_WEBSITE "www.yourcompany.com"
-    BUNDLE_ID "com.yourcompany.NeditVST"
-    PRODUCT_NAME "NeditVST"
+    BUNDLE_ID "com.yourcompany.NeditVSTDelayReverb"
+    PRODUCT_NAME "NeditVST-DelayReverb"
     DESCRIPTION "NeditVST"
     PLUGIN_MANUFACTURER_CODE Manu
-    PLUGIN_CODE Tpmh
+    PLUGIN_CODE Tpdr
     FORMATS VST3 Standalone
     VST3_CATEGORIES "Instrument" "Synth"
     IS_SYNTH TRUE
@@ -57,7 +64,7 @@ juce_add_plugin(NeditVST
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    COPY_PLUGIN_AFTER_BUILD FALSE
+    COPY_PLUGIN_AFTER_BUILD TRUE
 )
 
 target_sources(NeditVST
@@ -84,6 +91,8 @@ target_sources(NeditVST
         Source/PlaybackStyleSwatchRow.h
         Source/PlaybackStyleParameterPanel.cpp
         Source/PlaybackStyleParameterPanel.h
+        Source/EffectsBusPanel.cpp
+        Source/EffectsBusPanel.h
         Source/PatternBankPanel.cpp
         Source/PatternBankPanel.h
         Source/PerformanceKeyboardPanel.cpp

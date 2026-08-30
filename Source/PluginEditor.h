@@ -8,6 +8,7 @@
 #include "SequencerGrid.h"
 #include "PlaybackStyleSwatchRow.h"
 #include "PlaybackStyleParameterPanel.h"
+#include "EffectsBusPanel.h"
 #include "PatternBankPanel.h"
 #include "PerformanceKeyboardPanel.h"
 #include "ControlKeyboardPanel.h"
@@ -161,6 +162,13 @@ private:
     // see resized()'s own layout order. Returns the total height consumed.
     int layoutWaveformPanel (int startY, int width);
 
+    // The persistent Delay/Reverb send-bus panel -- lives in controlsContent
+    // alongside waveformDisplay (NOT subModeContent), for the same
+    // "always visible regardless of active tab" reason -- see
+    // effectsBusPanel's own class doc comment. Returns the total height
+    // consumed.
+    int layoutEffectsBusPanel (int startY, int width);
+
     // Absolute (controlsContent-local) content rect for a SectionPanel
     // that's already had setBounds() called -- title bar trimmed, standard
     // padding applied, same math as SectionPanel::getContentArea() but
@@ -294,6 +302,17 @@ private:
     juce::Slider pitchShiftSlider; // semitones, -24 to +24
 
     WaveformDisplay waveformDisplay;
+
+    //=== Delay/Reverb send bus panel (Pass 1) ===
+    // Persistent, always-visible regardless of the active tab -- lives in
+    // controlsContent (like waveformDisplay above), not subModeContent, and
+    // is never registered in generateComponents/sequenceComponents/
+    // performComponents/controlComponents, so updateActiveTabVisibility()
+    // never touches it. Both buses it controls run continuously,
+    // independent of any pick's lifecycle -- see
+    // SlicerAudioProcessor::processSendBuses().
+    PanelBackdrop effectsBusBackdrop;
+    EffectsBusPanel effectsBusPanel;
 
     //=== Generate tab ===
     // Playback style (selector, fader row, parameter panel) -- Generate-only

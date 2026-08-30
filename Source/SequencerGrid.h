@@ -120,7 +120,27 @@
     (PluginProcessor::processBlock()) is driven by this exact same declared
     length (SlicerAudioProcessor::getSequencerCellDeclaredLengthSteps()),
     so the bar this class renders and the decel time actually heard can
-    never disagree. */
+    never disagree.
+
+    Send-to-bus (Pass 2): two more entries in the same right-click menu,
+    "Send to Delay" and "Send to Reverb", offered on every active step
+    regardless of style (same "general" status as Subdivide/Volume) --
+    independent of each other and of everything else in the menu, so a
+    step can send to either bus, both, or neither. Each is itself a
+    submenu grouping that bus's own Send Amount alongside optional
+    overrides for its live character (Delay: Time, Feedback; Reverb: Size,
+    Decay) -- every one of the six is continuous, so all of them reuse the
+    exact same slider-overlay mechanism Resonance/Grain Size/etc. already
+    use above; only the grouping is new (see
+    SlicerAudioProcessor::getSequencerCellParameterName() indices 21-26).
+    Send Amount has no global default (0%/unset until a step explicitly
+    sets it -- opt-in, not automatic); the character overrides fall back to
+    the shared bus's own current live value when unset, and when they ARE
+    set, firing that step doesn't reconfigure a new bus instance -- it eases
+    the ONE shared, continuously-running Delay/Reverb bus's live parameter
+    toward that value over a short ramp (see
+    SlicerAudioProcessor::processSendBuses()), so the bus's character can
+    audibly drift as different steps fire without ever clicking. */
 class SequencerGrid : public juce::Component,
                        private juce::Timer
 {

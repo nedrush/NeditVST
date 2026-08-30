@@ -358,6 +358,32 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
         }
     }
 
+    // Send-to-bus (Pass 2) -- two independent, always-offered submenus (any
+    // active step regardless of style, same "general" status as Subdivide/
+    // Volume just handled by the loop above -- see
+    // getApplicableSequencerCellParameters()'s own doc comment for why
+    // indices 21-26 are deliberately excluded from applicableParams itself
+    // rather than looped over like everything else here). Each submenu
+    // groups its own Send Amount alongside that bus's character overrides
+    // (Delay: Time/Feedback; Reverb: Size/Decay) -- every entry is
+    // continuous, so all six reuse the exact same continuousItemId()/
+    // slider-overlay path as Resonance/Grain Size/etc. above; only the
+    // menu's own grouping is new. A step can pick either submenu's items,
+    // both, or neither -- entirely independent of one another and of
+    // whatever style-specific/Subdivide/Volume entries are already in
+    // `menu`.
+    juce::PopupMenu delaySendSubmenu;
+    delaySendSubmenu.addItem (continuousItemId (21), "Send Amount");
+    delaySendSubmenu.addItem (continuousItemId (22), "Time");
+    delaySendSubmenu.addItem (continuousItemId (23), "Feedback");
+    menu.addSubMenu ("Send to Delay", delaySendSubmenu);
+
+    juce::PopupMenu reverbSendSubmenu;
+    reverbSendSubmenu.addItem (continuousItemId (24), "Send Amount");
+    reverbSendSubmenu.addItem (continuousItemId (25), "Size");
+    reverbSendSubmenu.addItem (continuousItemId (26), "Decay");
+    menu.addSubMenu ("Send to Reverb", reverbSendSubmenu);
+
     // Positioning: without an explicit parent component, JUCE positions
     // (and flips up/down, left/right based on available space) this menu
     // against the whole physical screen/display -- fine for a normal

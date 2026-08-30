@@ -14,6 +14,7 @@ namespace
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p),
       waveformDisplay (p),
+      effectsBusPanel (p),
       playbackStyleFaderRow (p),
       playbackStyleParameterPanel (p),
       subdivisionGrid (p),
@@ -179,6 +180,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         loopLengthNeedsAttention = true;
         repaint();
     };
+
+    //=== Delay/Reverb send bus panel (Pass 1) -- persistent, lives directly
+    // in controlsContent so it stays visible regardless of which sub-mode
+    // tab is active, same as waveformDisplay just above. ===
+    controlsContent.addAndMakeVisible (effectsBusBackdrop);
+    controlsContent.addAndMakeVisible (effectsBusPanel);
 
     //=== Advanced popover controls (secondary waveform-panel settings) ===
     // Constructed/wired here exactly as before, but deliberately NOT parented
@@ -742,10 +749,30 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     int y = layoutWaveformPanel (0, contentWidth);
     y += layoutGap;
 
+    y = layoutEffectsBusPanel (y, contentWidth);
+    y += layoutGap;
+
     subModeTabs.setBounds (0, y, contentWidth, SegmentedButtonRow::preferredHeight);
     y += SegmentedButtonRow::preferredHeight;
 
     return y;
+}
+
+int SlicerAudioProcessorEditor::layoutEffectsBusPanel (int startY, int width)
+{
+    const int panelHeight = EffectsBusPanel::getPreferredHeight();
+    effectsBusBackdrop.setBounds (0, startY, width, panelHeight);
+    effectsBusPanel.setBounds (0, startY, width, panelHeight);
+
+    // Must return the new cumulative Y cursor (startY + panelHeight), NOT
+    // just panelHeight -- layoutControlsContent() does `y = layoutEffectsBusPanel (y, ...)`,
+    // reassigning its running Y cursor to this return value, so returning
+    // only the consumed height would discard everything laid out before
+    // this panel (the waveform panel above it). layoutWaveformPanel() gets
+    // away with returning just its own height because it's only ever
+    // called with startY == 0, the first thing in layoutControlsContent()
+    // -- that's not a convention to copy for any panel after the first.
+    return startY + panelHeight;
 }
 
 int SlicerAudioProcessorEditor::layoutWaveformPanel (int startY, int width)

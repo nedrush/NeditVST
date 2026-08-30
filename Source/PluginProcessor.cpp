@@ -164,7 +164,9 @@ namespace
         "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed", "Subdivide",
         "Sample Rate Reduction", "Sample Rate Reduction Mode", "Bit Depth", "Bit Depth Mode", "Rate",
         "Forward Curve", "Backward Curve", "Delay Time", "Delay Time Mode", "Mix", "Mix Mode",
-        "Feedback", "Feedback Mode", "Volume", "Volume Mode"
+        "Feedback", "Feedback Mode", "Volume", "Volume Mode",
+        "Delay Send Amount", "Delay Bus Time", "Delay Bus Feedback",
+        "Reverb Send Amount", "Reverb Bus Size", "Reverb Bus Decay"
     } };
 
     // Step 46: shared 0..1 progress-curve remap for Curve Shape -- Linear
@@ -483,6 +485,22 @@ void SlicerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     flangerDelayBuffer.setSize (GranularStretcher::maxChannels, flangerDelayBufferLength);
     flangerDelayBuffer.clear();
     flangerDelayWriteIndex = 0;
+
+    // Delay/Reverb send buses (Pass 1) -- same "needs the real sample
+    // rate, not a construction-time guess" reasoning as filterSweepFilter/
+    // flangerDelayBuffer above. Max delay comfortably covers the Delay
+    // Time parameter's full 2000ms range with headroom.
+    delayBusBuffer.setSize (GranularStretcher::maxChannels, samplesPerBlock);
+    delayBusBuffer.clear();
+    reverbBusBuffer.setSize (GranularStretcher::maxChannels, samplesPerBlock);
+    reverbBusBuffer.clear();
+
+    delayBusLine.prepare ({ sampleRate, (juce::uint32) samplesPerBlock, (juce::uint32) GranularStretcher::maxChannels });
+    delayBusLine.setMaximumDelayInSamples (juce::roundToInt (2.5 * sampleRate));
+    delayBusLine.reset();
+
+    reverbBusDSP.prepare ({ sampleRate, (juce::uint32) samplesPerBlock, (juce::uint32) GranularStretcher::maxChannels });
+    reverbBusDSP.reset();
 }
 
 void SlicerAudioProcessor::releaseResources() {}
@@ -492,7 +510,7 @@ bool SlicerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
     return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
 }
 
-void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+void SlicerAudioProcessor::renderPickBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
@@ -1228,6 +1246,46 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                             activeRow, currentStepIndex, "Volume", 1.0f);
                         currentPickVolumeMode = juce::roundToInt (getSequencerCellParameterOverride (
                             activeRow, currentStepIndex, "Volume Mode", 0.0f));
+
+                        // Send-to-bus (Pass 2) -- Send Amount is style-
+                        // independent and opt-in, same "no global dial,
+                        // captured only here" pattern as Volume just above:
+                        // an absent override falls back to 0.0f (no send),
+                        // read directly by processSendBuses() for the
+                        // duration of this pick.
+                        currentPickDelaySendAmount = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Delay Send Amount", 0.0f);
+                        currentPickReverbSendAmount = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Reverb Send Amount", 0.0f);
+
+                        // Send-to-bus character overrides (Time/Feedback/
+                        // Size/Decay) -- unlike every value above, these
+                        // don't feed this pick's own rendering at all; they
+                        // instead re-target the SHARED bus's own live ramp
+                        // (see delayBusTimeMsRampTargetValue etc. and
+                        // processSendBuses()), so the effect persists and
+                        // keeps evolving after this pick finishes, exactly
+                        // matching this feature's "one shared bus,
+                        // reconfigured over time" spec. Only touched when
+                        // this step actually HAS an override for that one
+                        // parameter -- a step with no override leaves the
+                        // target (and therefore the bus) exactly where it
+                        // already was, per spec.
+                        if (getSequencerCellHasParameterOverride (activeRow, currentStepIndex, "Delay Bus Time"))
+                            delayBusTimeMsRampTargetValue.store (juce::jlimit (1.0f, 2000.0f,
+                                getSequencerCellParameterOverride (activeRow, currentStepIndex, "Delay Bus Time", 0.0f)));
+
+                        if (getSequencerCellHasParameterOverride (activeRow, currentStepIndex, "Delay Bus Feedback"))
+                            delayBusFeedbackRampTargetValue.store (juce::jlimit (0.0f, 0.95f,
+                                getSequencerCellParameterOverride (activeRow, currentStepIndex, "Delay Bus Feedback", 0.0f)));
+
+                        if (getSequencerCellHasParameterOverride (activeRow, currentStepIndex, "Reverb Bus Size"))
+                            reverbBusSizeRampTargetValue.store (juce::jlimit (0.0f, 1.0f,
+                                getSequencerCellParameterOverride (activeRow, currentStepIndex, "Reverb Bus Size", 0.0f)));
+
+                        if (getSequencerCellHasParameterOverride (activeRow, currentStepIndex, "Reverb Bus Decay"))
+                            reverbBusDecayRampTargetValue.store (juce::jlimit (0.0f, 1.0f,
+                                getSequencerCellParameterOverride (activeRow, currentStepIndex, "Reverb Bus Decay", 0.0f)));
 
                         // Scratch Rate (v1) -- this step's own override if
                         // it has one, else the global value, same per-
@@ -3051,6 +3109,134 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     }
 }
 
+void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+{
+    renderPickBlock (buffer, midiMessages);
+    processSendBuses (buffer);
+}
+
+void SlicerAudioProcessor::processSendBuses (juce::AudioBuffer<float>& buffer)
+{
+    const int numChannels = buffer.getNumChannels();
+    const int numSamples = buffer.getNumSamples();
+
+    // Send Amount: Sequenced mode (Pass 2) uses the currently-rendering
+    // pick's own per-step Send Amount override (captured at that step's
+    // own trigger -- see currentPickDelaySendAmount/currentPickReverbSendAmount's
+    // own doc comment in PluginProcessor.h; 0.0f/no send if that step never
+    // had one set, per this feature's own opt-in spec). Every other trigger
+    // mode has no per-note or global Send Amount control at all, so it
+    // keeps Pass 1's original fixed 50% unchanged. `buffer` already holds
+    // this block's full dry single-voice output (or silence) at this
+    // point.
+    const bool sequencedModeNow = (triggerMode.load() == TriggerMode::sequenced);
+    const float delaySendAmount = sequencedModeNow ? currentPickDelaySendAmount : 0.5f;
+    const float reverbSendAmount = sequencedModeNow ? currentPickReverbSendAmount : 0.5f;
+
+    delayBusBuffer.setSize (numChannels, numSamples, false, false, true);
+    reverbBusBuffer.setSize (numChannels, numSamples, false, false, true);
+
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        delayBusBuffer.copyFrom (ch, 0, buffer, ch, 0, numSamples);
+        delayBusBuffer.applyGain (ch, 0, numSamples, delaySendAmount);
+
+        reverbBusBuffer.copyFrom (ch, 0, buffer, ch, 0, numSamples);
+        reverbBusBuffer.applyGain (ch, 0, numSamples, reverbSendAmount);
+    }
+
+    // --- Character ramp (Pass 2): ease each of the four live bus-character
+    // values (Time/Feedback/Size/Decay) toward its own ramp TARGET every
+    // block, rather than snapping to it instantly -- see
+    // delayBusTimeMsRampTargetValue's own doc comment in PluginProcessor.h
+    // for who writes each target. A step's own character override only
+    // ever moves the target (processBlock()'s sequencedMode branch); this
+    // is what actually moves the LIVE value the DSP just below reads, so
+    // an override landing mid-decay/mid-tail glides into place instead of
+    // jumping (this is a continuously-running processor, not a per-note
+    // instance -- an instant jump would click). One-pole exponential
+    // approach, a fixed ~40ms time constant regardless of block size --
+    // short enough to read as "live" as steps fire, long enough that even
+    // a large jump (e.g. a 2000ms Delay Time swing) never reads as a
+    // click. A manual dial turn (setDelayBusTimeMs() etc.) re-arms both
+    // the live value and its target to the same number, so this is a
+    // no-op immediately afterward rather than fighting the user's own
+    // adjustment. ---
+    constexpr float busCharacterRampSeconds = 0.04f;
+    const double sampleRateForRamp = getSampleRate();
+    const float busCharacterRampCoeff = sampleRateForRamp > 0.0
+        ? 1.0f - std::exp ((float) (-(double) numSamples / (busCharacterRampSeconds * sampleRateForRamp)))
+        : 1.0f;
+
+    auto rampBusCharacterToward = [busCharacterRampCoeff] (std::atomic<float>& live, const std::atomic<float>& target)
+    {
+        const float current = live.load();
+        const float dest = target.load();
+
+        if (current != dest)
+            live.store (current + (dest - current) * busCharacterRampCoeff);
+    };
+
+    rampBusCharacterToward (delayBusTimeMsValue, delayBusTimeMsRampTargetValue);
+    rampBusCharacterToward (delayBusFeedbackValue, delayBusFeedbackRampTargetValue);
+    rampBusCharacterToward (reverbBusSizeValue, reverbBusSizeRampTargetValue);
+    rampBusCharacterToward (reverbBusDecayValue, reverbBusDecayRampTargetValue);
+
+    // --- Delay bus: a hand-rolled feedback loop around juce::dsp::DelayLine
+    // (the DelayLine class itself has no built-in feedback, so this pushes
+    // input-plus-fed-back-delayed-sample and pops the delayed sample back
+    // out, same per-sample push/pop shape the Flanger style's own
+    // hand-rolled circular buffer already uses, just via JUCE's
+    // interpolated line instead). Persists across blocks -- and across
+    // picks -- via the DelayLine's own internal state, so a tail keeps
+    // ringing after the triggering pick stops. ---
+    const float delaySamples = juce::jlimit (1.0f, (float) delayBusLine.getMaximumDelayInSamples(),
+                                              (float) (delayBusTimeMsValue.load() * 0.001 * getSampleRate()));
+    delayBusLine.setDelay (delaySamples);
+    const float delayFeedback = delayBusFeedbackValue.load();
+
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        auto* data = delayBusBuffer.getWritePointer (ch);
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const float delayed = delayBusLine.popSample (ch);
+            delayBusLine.pushSample (ch, data[i] + delayed * delayFeedback);
+            data[i] = delayed;
+        }
+    }
+
+    // --- Reverb bus: juce::dsp::Reverb, forced 100% wet -- this bus's own
+    // Return Level (below) does the mixing back into the main output, not
+    // the Reverb DSP's own internal dry/wet blend, so every bus here uses
+    // the same send/return model. Decay maps onto damping, inverted (a
+    // higher Decay value means less high-frequency damping, i.e. a
+    // longer-sounding tail); Size maps directly onto roomSize. ---
+    juce::Reverb::Parameters reverbParams;
+    reverbParams.roomSize = reverbBusSizeValue.load();
+    reverbParams.damping = 1.0f - reverbBusDecayValue.load();
+    reverbParams.wetLevel = 1.0f;
+    reverbParams.dryLevel = 0.0f;
+    reverbParams.width = 1.0f;
+    reverbBusDSP.setParameters (reverbParams);
+
+    juce::dsp::AudioBlock<float> reverbBlock (reverbBusBuffer);
+    juce::dsp::ProcessContextReplacing<float> reverbContext (reverbBlock);
+    reverbBusDSP.process (reverbContext);
+
+    // --- Mix each bus's wet output back into the main output, scaled by
+    // its own Return Level. ---
+    const float delayReturn = delayBusReturnLevelValue.load();
+    const float reverbReturn = reverbBusReturnLevelValue.load();
+
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        buffer.addFrom (ch, 0, delayBusBuffer, ch, 0, numSamples, delayReturn);
+        buffer.addFrom (ch, 0, reverbBusBuffer, ch, 0, numSamples, reverbReturn);
+    }
+}
+
 juce::AudioProcessorEditor* SlicerAudioProcessor::createEditor()
 {
     return new SlicerAudioProcessorEditor (*this);
@@ -4058,6 +4244,7 @@ float SlicerAudioProcessor::getSequencerCellParameterMin (int index)
     if (index == 15) return 0.0f; // Mix (Flanger) -- fully dry
     if (index == 17) return 0.0f; // Feedback (Flanger) -- no feedback at all
     if (index == 19) return 0.0f; // Volume -- silence
+    if (index == 22) return 1.0f; // Delay Bus Time -- same floor setDelayBusTimeMs() itself clamps to
 
     return 0.0f;
 }
@@ -4074,6 +4261,11 @@ float SlicerAudioProcessor::getSequencerCellParameterMax (int index)
     if (index == 15) return flangerMixExtreme; // Mix (Flanger) -- fully wet, same convention
     if (index == 17) return flangerFeedbackExtreme; // Feedback (Flanger) -- 88%, short of self-oscillation, same convention
     if (index == 19) return 1.0f; // Volume -- full volume/unity gain
+    if (index == 22) return 2000.0f; // Delay Bus Time -- same ceiling setDelayBusTimeMs() itself clamps to
+    if (index == 23) return 0.95f;   // Delay Bus Feedback -- same ceiling setDelayBusFeedback() itself clamps to
+    // 21 (Delay Send Amount), 24 (Reverb Send Amount), 25 (Reverb Bus
+    // Size), 26 (Reverb Bus Decay) all fall through to the default 1.0f
+    // below, which already matches their own 0..1 range.
 
     return 1.0f;
 }
@@ -4113,6 +4305,16 @@ std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int
     // pure gain stage layered after whatever the style's own DSP already
     // produces, so it applies identically regardless of which style (if
     // any -- Forward included) is active.
+    //
+    // Send-to-bus (Pass 2, indices 21-26) is ALSO general/style-independent
+    // but is deliberately NOT appended here -- SequencerGrid's right-click
+    // menu offers "Send to Delay"/"Send to Reverb" itself, as two grouped
+    // submenus, for every active step regardless of what this function
+    // returns (see its showParameterMenuForCell()). Keeping them out of
+    // this list also keeps them out of buildColumnsForStyle()'s
+    // Slice Length/Clock-mode dial panel and randomizeSequence()'s
+    // per-style randomization, both of which iterate this function's own
+    // result -- neither is meaningful for a per-step bus send.
     params.push_back (5);
     params.push_back (19);
     return params;
@@ -4143,6 +4345,12 @@ float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) con
         case 18: return (float) getFlangerFeedbackModeGlobal();
         case 19: return 1.0f; // Volume -- no global dial; full volume (no change) is always the fallback/default
         case 20: return 0.0f; // Volume Mode -- Static is always the fallback/default
+        case 21: return 0.0f; // Delay Send Amount -- no global dial (no Send Amount control exists outside a per-step override); 0 (no send) is always the fallback/default
+        case 22: return getDelayBusTimeMs(); // Delay Bus Time -- the shared bus's own current (possibly still-ramping) live value
+        case 23: return getDelayBusFeedback(); // Delay Bus Feedback -- ditto
+        case 24: return 0.0f; // Reverb Send Amount -- no global dial; 0 (no send) is always the fallback/default
+        case 25: return getReverbBusSize(); // Reverb Bus Size -- the shared bus's own current live value
+        case 26: return getReverbBusDecay(); // Reverb Bus Decay -- ditto
         default: return 0.0f;
     }
 }

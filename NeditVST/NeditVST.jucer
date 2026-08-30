@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="tpMhkh" name="NeditVST" projectType="audioplug" useAppConfig="0"
-              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn">
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
+              pluginName="NeditVST-DelayReverb" bundleIdentifier="com.yourcompany.NeditVSTDelayReverb"
+              pluginCode="Tpdr">
   <MAINGROUP id="sgvVxZ" name="NeditVST">
     <GROUP id="{3CC86A09-BFA9-C1C7-F154-3FBFAAA37A60}" name="Source">
       <FILE id="IeJt7W" name="PluginEditor.cpp" compile="1" resource="0"
@@ -49,6 +51,10 @@
             file="../Source/PlaybackStyleParameterPanel.cpp"/>
       <FILE id="g7Mq2X" name="PlaybackStyleParameterPanel.h" compile="0" resource="0"
             file="../Source/PlaybackStyleParameterPanel.h"/>
+      <FILE id="k8Nr5W" name="EffectsBusPanel.cpp" compile="1" resource="0"
+            file="../Source/EffectsBusPanel.cpp"/>
+      <FILE id="m9Ps6X" name="EffectsBusPanel.h" compile="0" resource="0"
+            file="../Source/EffectsBusPanel.h"/>
       <FILE id="h9Rk3P" name="PatternBankPanel.cpp" compile="1" resource="0"
             file="../Source/PatternBankPanel.cpp"/>
       <FILE id="m4Vd7T" name="PatternBankPanel.h" compile="0" resource="0"

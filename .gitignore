@@ -14,6 +14,7 @@
 
 # CMake (if we ever move to a CMake-based build instead of/alongside Projucer)
 **/build/
+**/build-release/
 **/CMakeCache.txt
 **/CMakeFiles/
 
